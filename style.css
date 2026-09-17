@@ -346,6 +346,10 @@ dd {
   border-color: transparent;
 }
 
+.channel-tab.unread {
+  border-color: var(--accent-2);
+}
+
 .tab-label {
   display: inline-block;
 }
@@ -365,6 +369,15 @@ dd {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   box-shadow: 0 0 0 2px rgba(17, 20, 20, 0.9);
+}
+
+html[data-theme="mono"] .channel-tab.unread {
+  border-color: #ffffff;
+}
+
+html[data-theme="mono"] .tab-badge {
+  background: #ffffff;
+  color: #090909;
 }
 
 .details {

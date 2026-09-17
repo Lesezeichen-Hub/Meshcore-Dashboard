@@ -190,7 +190,6 @@ el.channelTabs.addEventListener("click", (event) => {
     }
     renderChannels();
   } else {
-    state.unreadChannels.clear();
     state.dmTarget = null;
   }
   updateMessageInputPlaceholder();
@@ -893,13 +892,13 @@ function addMessage(message) {
 
   if (message.kind === "contact") {
     if (state.activeChannel !== "dm") {
-      state.unreadChannels.set("dm", true);
+      state.unreadChannels.set("dm", (state.unreadChannels.get("dm") || 0) + 1);
     }
   }
   if ((message.kind === "channel" || message.kind === "data") && message.channel != null) {
     const channelKey = String(message.channel);
     if (state.activeChannel !== channelKey) {
-      state.unreadChannels.set(channelKey, true);
+      state.unreadChannels.set(channelKey, (state.unreadChannels.get(channelKey) || 0) + 1);
     }
   }
 
@@ -974,8 +973,10 @@ function renderContacts() {
 function renderChannelTabs() {
   const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
   const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: "DM" }, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
+  const totalUnread = [...state.unreadChannels.values()].reduce((total, count) => total + Number(count || 0), 0);
   el.channelTabs.innerHTML = tabs.map((tab) => {
-    const unread = tab.key === "dm" ? state.unreadChannels.has("dm") : state.unreadChannels.has(tab.key);
+    const unreadCount = tab.key === "all" ? totalUnread : Number(state.unreadChannels.get(tab.key) || 0);
+    const unread = unreadCount > 0;
     return `
       <button
         type="button"
@@ -984,7 +985,7 @@ function renderChannelTabs() {
         aria-label="${escapeHtml(tab.label)}${unread ? ", neue Nachrichten" : ""}"
       >
         <span class="tab-label">${escapeHtml(tab.label)}</span>
-        ${unread ? '<span class="tab-badge" aria-label="Neue Nachrichten">Neu</span>' : ""}
+        ${unread ? `<span class="tab-badge" aria-label="${unreadCount} neue Nachrichten">${unreadCount > 99 ? "99+" : unreadCount}</span>` : ""}
       </button>
     `;
   }).join("");
