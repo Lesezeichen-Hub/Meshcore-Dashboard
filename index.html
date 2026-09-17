@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MeshCore Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>MeshCore Dashboard</h1>
+        <p id="supportHint">USB-Companion via Web Serial</p>
+      </div>
+      <div class="actions">
+        <button id="connectBtn" type="button">Verbinden</button>
+        <button id="syncBtn" type="button" disabled>Sync</button>
+        <button id="advertBtn" type="button" disabled>Advert senden</button>
+        <button id="disconnectBtn" type="button" disabled>Trennen</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="status-band" aria-label="Status">
+        <div>
+          <span class="label">Status</span>
+          <strong id="connectionState">Nicht verbunden</strong>
+        </div>
+        <div>
+          <span class="label">Node</span>
+          <strong id="nodeName">-</strong>
+        </div>
+        <div>
+          <span class="label">Radio</span>
+          <strong id="radioSummary">-</strong>
+        </div>
+        <div>
+          <span class="label">Batterie</span>
+          <strong id="batterySummary">-</strong>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Device</h2>
+            <span id="deviceVersion" class="chip">-</span>
+          </div>
+          <dl class="details">
+            <div><dt>Modell</dt><dd id="deviceModel">-</dd></div>
+            <div><dt>Firmware</dt><dd id="firmwareBuild">-</dd></div>
+            <div><dt>Public Key</dt><dd id="publicKey">-</dd></div>
+            <div><dt>Position</dt><dd id="selfLocation">-</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Kanäle</h2>
+            <span id="channelCount" class="chip">0</span>
+          </div>
+          <div id="channels" class="list empty">Noch keine Kanäle synchronisiert.</div>
+          <form id="channelForm" class="channel-form">
+            <input id="channelNameInput" type="text" maxlength="31" placeholder="Kanalname" aria-label="Kanalname" disabled required>
+            <select id="channelTypeSelect" aria-label="Kanaltyp" disabled>
+              <option value="hashtag">Hashtag</option>
+              <option value="private">Privat</option>
+            </select>
+            <button id="createChannelBtn" type="submit" disabled>Anlegen</button>
+          </form>
+        </article>
+
+        <article class="panel span-2">
+          <div class="panel-head">
+            <h2>Repeater & Clients</h2>
+            <span id="contactCount" class="chip">0</span>
+          </div>
+          <div id="contacts" class="table empty">Noch keine Kontakte synchronisiert.</div>
+        </article>
+
+        <article class="panel span-2">
+          <div class="panel-head">
+            <h2>Nachrichten</h2>
+            <form id="sendForm" class="send-form">
+              <select id="channelSelect" aria-label="Kanal" disabled></select>
+              <input id="messageInput" type="text" maxlength="150" placeholder="Nachricht an Kanal" disabled>
+              <button id="sendBtn" type="submit" disabled>Senden</button>
+            </form>
+          </div>
+          <div id="messages" class="messages empty">Noch keine Nachrichten.</div>
+        </article>
+
+        <article class="panel span-2">
+          <div class="panel-head">
+            <h2>Log</h2>
+            <button id="clearLogBtn" type="button" class="secondary">Leeren</button>
+          </div>
+          <pre id="log"></pre>
+        </article>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
