@@ -219,6 +219,39 @@ dd {
   font-weight: 760;
 }
 
+.panel-toolbar {
+  padding: 10px 12px 0;
+}
+
+.panel-toolbar input {
+  width: min(280px, 100%);
+}
+
+.channel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.channel-tab {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.channel-tab.active {
+  background: var(--accent);
+  color: #09110d;
+  border-color: transparent;
+}
+
 .details {
   display: grid;
   gap: 1px;

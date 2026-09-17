@@ -62,10 +62,12 @@ const state = {
   frameBuffer: [],
   contacts: new Map(),
   channels: new Map(),
-  messages: [],
+  messages: loadStoredMessages(),
   latestContactsSince: 0,
   waiters: [],
   pendingAcks: new Map(),
+  activeChannel: "all",
+  contactSearch: "",
   ackResults: new Map(),
   pendingPings: new Map(),
   lastRf: null,
@@ -99,6 +101,8 @@ const el = {
   messageInput: document.querySelector("#messageInput"),
   sendBtn: document.querySelector("#sendBtn"),
   sendForm: document.querySelector("#sendForm"),
+  contactSearch: document.querySelector("#contactSearch"),
+  channelTabs: document.querySelector("#channelTabs"),
   log: document.querySelector("#log"),
   clearLogBtn: document.querySelector("#clearLogBtn"),
   actionNotice: document.querySelector("#actionNotice"),
@@ -118,6 +122,28 @@ el.syncBtn.addEventListener("click", () => {
 el.advertBtn.addEventListener("click", () => {
   showActionNotice("Advert wird gesendet…");
   sendCommand([CMD.SEND_SELF_ADVERT, 1]);
+});
+el.contactSearch.addEventListener("input", (event) => {
+  state.contactSearch = event.target.value.trim().toLowerCase();
+  renderContacts();
+});
+el.channelTabs.addEventListener("click", (event) => {
+  const tab = event.target.closest("button[data-channel-index]");
+  if (!tab) return;
+  state.activeChannel = tab.dataset.channelIndex;
+  if (state.activeChannel !== "all" && state.activeChannel !== "dm") {
+    el.channelSelect.value = String(state.activeChannel);
+  }
+  renderMessages();
+  renderChannelTabs();
+});
+el.channelSelect.addEventListener("change", () => {
+  const next = el.channelSelect.value;
+  if (next) {
+    state.activeChannel = String(next);
+    renderMessages();
+    renderChannelTabs();
+  }
 });
 el.clearLogBtn.addEventListener("click", () => {
   el.log.textContent = "";
@@ -595,6 +621,7 @@ function parseContact(data) {
   if (data.length < 132) return;
   const key = sliceHex(data, 1, 33);
   const pathLenRaw = data[35];
+  const lastAdvertRaw = readU32(data, 132);
   const contact = {
     key,
     prefix: key.slice(0, 12),
@@ -604,10 +631,10 @@ function parseContact(data) {
     outPathLenRaw: pathLenRaw,
     outPathRaw: data.slice(36, 100),
     name: decodeCString(data, 100, 32) || key.slice(0, 12),
-    lastAdvert: readU32(data, 132),
+    lastAdvert: normalizeFutureTimestamp(lastAdvertRaw),
     lat: readI32(data, 136),
     lon: readI32(data, 140),
-    lastmod: readU32(data, 144),
+    lastmod: normalizeFutureTimestamp(readU32(data, 144)),
   };
   state.contacts.set(key, contact);
   renderContacts();
@@ -707,16 +734,45 @@ function parseChannelData(data) {
 
 function addMessage(message) {
   state.messages.unshift(message);
-  state.messages = state.messages.slice(0, 80);
+  state.messages = state.messages.slice(0, 200);
+  persistMessages();
   renderMessages();
+}
+
+function loadStoredMessages() {
+  try {
+    const raw = localStorage.getItem("meshcore-dashboard-messages");
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, 200) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function persistMessages() {
+  try {
+    localStorage.setItem("meshcore-dashboard-messages", JSON.stringify(state.messages.slice(0, 200)));
+  } catch (error) {
+    // Browser-Speicher kann in privaten Modus oder bei quota limits fehlen.
+  }
 }
 
 function renderContacts() {
   const contacts = [...state.contacts.values()].sort((a, b) => (b.lastAdvert || 0) - (a.lastAdvert || 0));
-  el.contactCount.textContent = String(contacts.length);
-  if (!contacts.length) {
+  const query = state.contactSearch;
+  const visible = query
+    ? contacts.filter((contact) => {
+        const haystack = [contact.name, contact.key, contact.prefix, TYPE_NAMES[contact.type] || "", formatContactRoute(contact.outPathLen)]
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+    : contacts;
+  el.contactCount.textContent = String(visible.length);
+  if (!visible.length) {
     el.contacts.className = "table empty";
-    el.contacts.textContent = "Noch keine Kontakte synchronisiert.";
+    el.contacts.textContent = query ? "Keine Kontakte passen zur Suche." : "Noch keine Kontakte synchronisiert.";
     return;
   }
   el.contacts.className = "table";
@@ -724,7 +780,7 @@ function renderContacts() {
     <table class="contact-table">
       <thead><tr><th>Name</th><th>Typ</th><th>Routing</th><th>Signal</th><th>Position</th><th>Letztes Advert</th><th>Public Key</th><th>Aktion</th></tr></thead>
       <tbody>
-        ${contacts.map((contact) => `
+        ${visible.map((contact) => `
           <tr>
             <td>${escapeHtml(contact.name)}</td>
             <td>${escapeHtml(TYPE_NAMES[contact.type] || `Typ ${contact.type}`)}</td>
@@ -738,6 +794,14 @@ function renderContacts() {
         `).join("")}
       </tbody>
     </table>`;
+}
+
+function renderChannelTabs() {
+  const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
+  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: "DM" }, ...visible.map((channel) => ({ key: String(channel.index), label: `#${channel.index} ${channel.name || "Kanal"}` }))];
+  el.channelTabs.innerHTML = tabs.map((tab) => `
+    <button type="button" class="channel-tab${state.activeChannel === tab.key ? " active" : ""}" data-channel-index="${escapeHtml(tab.key)}">${escapeHtml(tab.label)}</button>
+  `).join("");
 }
 
 function renderChannels() {
@@ -765,11 +829,16 @@ function renderChannels() {
     `).join("");
   }
 
-  const selected = el.channelSelect.value;
+  const selected = el.channelSelect.value || state.activeChannel;
   el.channelSelect.innerHTML = visible.map((channel) => (
     `<option value="${channel.index}">#${channel.index} ${escapeHtml(channel.name || "Kanal")}</option>`
   )).join("");
-  if (selected) el.channelSelect.value = selected;
+  if (selected && (selected === "all" || selected === "dm" || visible.some((channel) => String(channel.index) === String(selected)))) {
+    el.channelSelect.value = selected;
+  } else if (visible.length) {
+    el.channelSelect.value = String(visible[0].index);
+  }
+  renderChannelTabs();
   const canSend = state.connected && visible.length > 0;
   el.channelSelect.disabled = !canSend;
   el.messageInput.disabled = !canSend;
@@ -777,13 +846,26 @@ function renderChannels() {
 }
 
 function renderMessages() {
-  if (!state.messages.length) {
+  const filtered = state.messages.filter((message) => {
+    if (state.activeChannel === "all") return true;
+    if (state.activeChannel === "dm") return message.kind === "contact";
+    if (message.kind === "channel" || message.kind === "data") {
+      return Number(message.channel) === Number(state.activeChannel);
+    }
+    return false;
+  });
+
+  if (!filtered.length) {
     el.messages.className = "messages empty";
-    el.messages.textContent = "Noch keine Nachrichten.";
+    el.messages.textContent = state.activeChannel === "all"
+      ? "Noch keine Nachrichten."
+      : state.activeChannel === "dm"
+        ? "Noch keine Direktnachrichten in diesem Tab."
+        : "Noch keine Nachrichten in diesem Kanal.";
     return;
   }
   el.messages.className = "messages";
-  el.messages.innerHTML = state.messages.slice(0, 10).map((message) => {
+  el.messages.innerHTML = filtered.slice(0, 30).map((message) => {
     const isDm = message.kind === "contact";
     const channelName = message.channel == null ? "" : state.channels.get(message.channel)?.name;
     const channelLabel = `#${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
@@ -829,6 +911,7 @@ function updateConnectionUi() {
   el.channelTypeSelect.disabled = !state.connected;
   el.createChannelBtn.disabled = !state.connected;
   renderChannels();
+  renderMessages();
 }
 
 let actionNoticeTimer = null;
@@ -944,6 +1027,12 @@ function formatContactRoute(pathLen) {
   if (pathLen == null || pathLen < 0) return "Flood";
   const hops = pathLen & 0x3f;
   return hops === 0 ? "Direkt (0 Hops)" : `Direkter Pfad, ${hops} ${hops === 1 ? "Hop" : "Hops"}`;
+}
+
+function normalizeFutureTimestamp(epoch) {
+  if (epoch == null) return null;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return epoch > nowSeconds ? nowSeconds : epoch;
 }
 
 function formatTime(epoch) {
