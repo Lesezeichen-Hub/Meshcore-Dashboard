@@ -212,6 +212,18 @@ el.contacts.addEventListener("click", (event) => {
   }
 });
 el.messages.addEventListener("click", (event) => {
+  const pongBtn = event.target.closest("button[data-pong-index]");
+  if (pongBtn) {
+    const message = state.messages[Number(pongBtn.dataset.pongIndex)];
+    const reply = message ? getPingReply(message) : null;
+    if (!reply || !state.connected) return;
+    pongBtn.disabled = true;
+    sendChannelMessage(message.channel, reply.text).catch((error) => {
+      pongBtn.disabled = false;
+      log(`Pong konnte nicht gesendet werden: ${error.message}`, "error");
+    });
+    return;
+  }
   const replyBtn = event.target.closest("button[data-reply]");
   if (!replyBtn) return;
   const contact = [...state.contacts.values()].find((item) => item.prefix === replyBtn.dataset.reply);
@@ -1026,11 +1038,16 @@ function renderMessages() {
       const replyButton = isDm && replyContact?.type === 1
         ? `<button type="button" class="secondary" data-reply="${escapeHtml(message.prefix)}">Antworten</button>`
       : "";
+    const pingReply = getPingReply(message);
+    const pongButton = pingReply
+      ? `<button type="button" class="secondary" data-pong-index="${state.messages.indexOf(message)}"${state.connected ? "" : " disabled"}>Pong</button>`
+      : "";
     return `
       <div class="message${isDm ? " dm" : ""}">
         <div class="message-head">
           <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
+          ${pongButton}
           ${replyButton}
         </div>
         <span class="message-text">${escapeHtml(message.text || "")}</span>
@@ -1038,6 +1055,22 @@ function renderMessages() {
       </div>
     `;
   }).join("");
+}
+
+function getPingReply(message) {
+  if (message.kind !== "channel" || message.channel == null) return null;
+  const channelName = state.channels.get(message.channel)?.name || "";
+  if (channelName.replace(/^#/, "").toLowerCase() !== PING_TARGET_CHANNEL) return null;
+
+  const text = String(message.text || "");
+  const separator = text.indexOf(":");
+  if (separator < 1) return null;
+  const sender = text.slice(0, separator).trim();
+  const body = text.slice(separator + 1).trimStart();
+  if (!sender || !body.toLowerCase().startsWith("ping")) return null;
+
+  const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
+  return { text: `@[${sender}] Pong - ${hops} Hops`, sender, hops };
 }
 
 function updateMessageInputPlaceholder() {
