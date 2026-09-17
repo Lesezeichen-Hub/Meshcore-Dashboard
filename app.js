@@ -1071,13 +1071,25 @@ function renderMessages() {
 
 function renderMessageText(message) {
   const text = String(message.text || "");
-  if (message.kind !== "channel") return escapeHtml(text);
+  if (message.kind !== "channel") return renderMentions(text);
   const separator = text.indexOf(":");
-  if (separator < 1) return escapeHtml(text);
+  if (separator < 1) return renderMentions(text);
   const sender = text.slice(0, separator).trim();
   const body = text.slice(separator + 1).trimStart();
-  if (!sender) return escapeHtml(text);
-  return `<span class="message-author">${escapeHtml(sender)}</span><span class="message-body">${escapeHtml(body)}</span>`;
+  if (!sender) return renderMentions(text);
+  return `<span class="message-author">${escapeHtml(sender)}</span><span class="message-body">${renderMentions(body)}</span>`;
+}
+
+function renderMentions(text) {
+  const mentionPattern = /@\[([^\]\r\n]+)\]/g;
+  let html = "";
+  let offset = 0;
+  for (const match of text.matchAll(mentionPattern)) {
+    html += escapeHtml(text.slice(offset, match.index));
+    html += `<span class="message-mention">${escapeHtml(match[0])}</span>`;
+    offset = match.index + match[0].length;
+  }
+  return html + escapeHtml(text.slice(offset));
 }
 
 function loadTheme() {

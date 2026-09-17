@@ -404,7 +404,8 @@ dd {
   line-height: 1.45;
 }
 
-.message-author {
+.message-author,
+.message-mention {
   flex: 0 0 auto;
   color: var(--accent);
   font-weight: 780;
@@ -418,6 +419,16 @@ dd {
 .message-body {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+html[data-theme="mono"] .message-text {
+  color: #a8a8a8;
+}
+
+html[data-theme="mono"] .message-author,
+html[data-theme="mono"] .message-mention {
+  color: #ffffff;
+  font-weight: 800;
 }
 
 .contact-table {
