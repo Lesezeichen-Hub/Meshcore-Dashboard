@@ -849,7 +849,7 @@ function renderMessages() {
   const filtered = state.messages.filter((message) => {
     if (state.activeChannel === "all") return true;
     if (state.activeChannel === "dm") return message.kind === "contact";
-    if (message.kind === "channel" || message.kind === "data") {
+    if (message.kind === "channel" || message.kind === "data" || message.kind === "out") {
       return Number(message.channel) === Number(state.activeChannel);
     }
     return false;
