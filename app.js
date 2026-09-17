@@ -110,7 +110,10 @@ const el = {
   log: document.querySelector("#log"),
   clearLogBtn: document.querySelector("#clearLogBtn"),
   actionNotice: document.querySelector("#actionNotice"),
+  themeToggle: document.querySelector("#themeToggle"),
 };
+
+applyTheme(loadTheme());
 
 if (!("serial" in navigator)) {
   el.supportHint.textContent = "Dieser Browser unterstuetzt Web Serial nicht. Nutze Chrome oder Edge.";
@@ -118,6 +121,15 @@ if (!("serial" in navigator)) {
 }
 
 el.connectBtn.addEventListener("click", connect);
+el.themeToggle.addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "mono" ? "default" : "mono";
+  applyTheme(theme);
+  try {
+    localStorage.setItem("meshcore-dashboard-theme", theme);
+  } catch {
+    // The selected theme still applies for this session.
+  }
+});
 el.disconnectBtn.addEventListener("click", disconnect);
 el.syncBtn.addEventListener("click", () => {
   showActionNotice("Sync gestartet…");
@@ -1050,11 +1062,39 @@ function renderMessages() {
           ${pongButton}
           ${replyButton}
         </div>
-        <span class="message-text">${escapeHtml(message.text || "")}</span>
+        <span class="message-text">${renderMessageText(message)}</span>
         <span class="meta">${escapeHtml(meta)}</span>
       </div>
     `;
   }).join("");
+}
+
+function renderMessageText(message) {
+  const text = String(message.text || "");
+  if (message.kind !== "channel") return escapeHtml(text);
+  const separator = text.indexOf(":");
+  if (separator < 1) return escapeHtml(text);
+  const sender = text.slice(0, separator).trim();
+  const body = text.slice(separator + 1).trimStart();
+  if (!sender) return escapeHtml(text);
+  return `<span class="message-author">${escapeHtml(sender)}</span><span class="message-body">${escapeHtml(body)}</span>`;
+}
+
+function loadTheme() {
+  try {
+    return localStorage.getItem("meshcore-dashboard-theme") === "mono" ? "mono" : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function applyTheme(theme) {
+  const monochrome = theme === "mono";
+  document.documentElement.dataset.theme = monochrome ? "mono" : "default";
+  el.themeToggle.setAttribute("aria-pressed", String(monochrome));
+  el.themeToggle.setAttribute("aria-label", monochrome
+    ? "Monochromen Dark Mode ausschalten"
+    : "Monochromen Dark Mode einschalten");
 }
 
 function getPingReply(message) {

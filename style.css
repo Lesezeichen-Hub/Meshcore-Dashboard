@@ -23,6 +23,10 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+html[data-theme="mono"] body {
+  filter: grayscale(1);
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -116,6 +120,27 @@ button.secondary {
   background: var(--panel-2);
   color: var(--text);
   border-color: var(--line);
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+  place-items: center;
+}
+
+.theme-icon {
+  width: 17px;
+  height: 17px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+
+[aria-pressed="true"] .theme-icon {
+  background: currentColor;
+  box-shadow: inset -5px 0 0 var(--panel-2);
 }
 
 button:disabled,
@@ -328,6 +353,11 @@ dd {
 .message {
   border-left: 3px solid transparent;
   border-radius: 4px;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.message:hover {
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .message.dm {
@@ -367,7 +397,27 @@ dd {
 }
 
 .message-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 14px;
+  line-height: 1.45;
+}
+
+.message-author {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 780;
+}
+
+.message-author::after {
+  content: ":";
+  color: var(--muted);
+}
+
+.message-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .contact-table {
