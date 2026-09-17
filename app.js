@@ -110,6 +110,10 @@ const el = {
   log: document.querySelector("#log"),
   clearLogBtn: document.querySelector("#clearLogBtn"),
   actionNotice: document.querySelector("#actionNotice"),
+  routeDialog: document.querySelector("#routeDialog"),
+  routeDialogTitle: document.querySelector("#routeDialogTitle"),
+  routeDialogContent: document.querySelector("#routeDialogContent"),
+  routeDialogClose: document.querySelector("#routeDialogClose"),
 };
 
 if (!("serial" in navigator)) {
@@ -212,6 +216,12 @@ el.contacts.addEventListener("click", (event) => {
   }
 });
 el.messages.addEventListener("click", (event) => {
+  const routeBtn = event.target.closest("button[data-route-index]");
+  if (routeBtn) {
+    const message = state.messages[Number(routeBtn.dataset.routeIndex)];
+    if (message) showRouteDialog(message);
+    return;
+  }
   const replyBtn = event.target.closest("button[data-reply]");
   if (!replyBtn) return;
   const contact = [...state.contacts.values()].find((item) => item.prefix === replyBtn.dataset.reply);
@@ -222,6 +232,10 @@ el.messages.addEventListener("click", (event) => {
   renderChannels();
   renderMessages();
   renderChannelTabs();
+});
+el.routeDialogClose.addEventListener("click", () => el.routeDialog.close());
+el.routeDialog.addEventListener("click", (event) => {
+  if (event.target === el.routeDialog) el.routeDialog.close();
 });
 
 async function connect() {
@@ -1000,9 +1014,10 @@ function renderMessages() {
     const isDm = message.kind === "contact" || message.outgoing === true;
     const channelName = message.channel == null ? "" : state.channels.get(message.channel)?.name;
     const channelLabel = `#${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
-    const contactName = message.prefix
-      ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)?.name
+    const contact = message.prefix
+      ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)
       : null;
+    const contactName = contact?.name;
     const isOutgoing = message.kind === "out" || message.outgoing === true;
     const direction = isOutgoing ? "Gesendet" : "Empfangen";
     const badge = isDm ? "DM" : channelLabel;
@@ -1020,17 +1035,20 @@ function renderMessages() {
         ? `Timeout ${message.estimatedTimeout} ms`
         : null,
     ].filter(Boolean).join(" | ");
-      const replyContact = message.prefix
-        ? [...state.contacts.values()].find((contact) => contact.prefix === message.prefix)
-        : null;
-      const replyButton = isDm && replyContact?.type === 1
+      const replyButton = isDm && contact?.type === 1
         ? `<button type="button" class="secondary" data-reply="${escapeHtml(message.prefix)}">Antworten</button>`
+      : "";
+    const route = contact ? formatPathHashes(contact.outPathLenRaw, contact.outPathRaw) : null;
+    const hasRouteInfo = (!isOutgoing && message.pathLen != null) || route?.list;
+    const routeButton = hasRouteInfo
+      ? `<button type="button" class="secondary route-button" data-route-index="${state.messages.indexOf(message)}">Pfad</button>`
       : "";
     return `
       <div class="message${isDm ? " dm" : ""}">
         <div class="message-head">
           <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
+          ${routeButton}
           ${replyButton}
         </div>
         <span class="message-text">${escapeHtml(message.text || "")}</span>
@@ -1038,6 +1056,42 @@ function renderMessages() {
       </div>
     `;
   }).join("");
+}
+
+function showRouteDialog(message) {
+  const contact = message.prefix
+    ? [...state.contacts.values()].find((item) => item.prefix === message.prefix)
+    : null;
+  const knownPath = contact ? formatPathHashes(contact.outPathLenRaw, contact.outPathRaw) : { list: null, hops: 0 };
+  const knownHashes = knownPath.list ? knownPath.list.split(",") : [];
+  const receivedHops = message.pathLen == null || message.pathLen === 0xff ? 0 : message.pathLen & 0x3f;
+  const hashes = knownHashes.length ? knownHashes : Array.from({ length: receivedHops }, (_, index) => `Repeater ${index + 1}`);
+  const peer = contact?.name || message.prefix || (message.channel == null ? "Gegenstelle" : `Kanal #${message.channel}`);
+  const outgoing = message.kind === "out" || message.outgoing === true;
+  const start = outgoing ? "Mein Node" : peer;
+  const target = outgoing ? peer : "Mein Node";
+  const nodes = [start, ...hashes, target];
+
+  el.routeDialogTitle.textContent = outgoing ? `Gesendet an ${peer}` : `Empfangen von ${peer}`;
+  el.routeDialogContent.innerHTML = `
+    <div class="route-summary">
+      <strong>${hashes.length} ${hashes.length === 1 ? "Hop" : "Hops"}</strong>
+      <span>${message.pathLen === 0xff ? "Direkte Verbindung" : knownHashes.length ? "Repeater-Hashes vorhanden" : "Repeater nicht einzeln identifiziert"}</span>
+    </div>
+    <ol class="route-track">
+      ${nodes.map((node, index) => {
+        const endpoint = index === 0 || index === nodes.length - 1;
+        const label = index === 0 ? "Start" : index === nodes.length - 1 ? "Ziel" : `Hop ${index}`;
+        return `<li class="${endpoint ? "endpoint" : "repeater"}"><span class="route-dot"></span><div><small>${label}</small><strong>${escapeHtml(node)}</strong></div></li>`;
+      }).join("")}
+    </ol>
+    <p class="route-note">${knownHashes.length
+      ? outgoing
+        ? "Angezeigt wird der aktuell beim Kontakt gespeicherte Sendepfad. Er kann sich seit dieser Nachricht geändert haben."
+        : "Die Hash-Folge ist der aktuell gespeicherte Rückweg zum Kontakt, nicht der belegte Empfangspfad dieser Nachricht."
+      : "MeshCore liefert für diese Nachricht nur die Hop-Anzahl, nicht die Identität der durchlaufenen Repeater."}</p>
+  `;
+  el.routeDialog.showModal();
 }
 
 function updateMessageInputPlaceholder() {
