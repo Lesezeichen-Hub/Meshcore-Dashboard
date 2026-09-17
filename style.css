@@ -33,6 +33,44 @@ body {
   background: #151919;
 }
 
+.actions-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.action-notice {
+  min-height: 22px;
+  padding: 6px 10px;
+  border: 1px solid rgba(87, 215, 160, 0.35);
+  border-radius: 999px;
+  background: rgba(87, 215, 160, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 180ms ease, transform 180ms ease;
+  pointer-events: none;
+}
+
+.action-notice.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.action-notice[data-variant="warn"] {
+  border-color: rgba(243, 201, 105, 0.45);
+  background: rgba(243, 201, 105, 0.12);
+}
+
+.action-notice[data-variant="error"] {
+  border-color: rgba(255, 107, 107, 0.45);
+  background: rgba(255, 107, 107, 0.12);
+}
+
 h1,
 h2,
 p {

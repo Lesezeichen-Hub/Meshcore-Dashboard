@@ -101,6 +101,7 @@ const el = {
   sendForm: document.querySelector("#sendForm"),
   log: document.querySelector("#log"),
   clearLogBtn: document.querySelector("#clearLogBtn"),
+  actionNotice: document.querySelector("#actionNotice"),
 };
 
 if (!("serial" in navigator)) {
@@ -110,8 +111,14 @@ if (!("serial" in navigator)) {
 
 el.connectBtn.addEventListener("click", connect);
 el.disconnectBtn.addEventListener("click", disconnect);
-el.syncBtn.addEventListener("click", fullSync);
-el.advertBtn.addEventListener("click", () => sendCommand([CMD.SEND_SELF_ADVERT, 1]));
+el.syncBtn.addEventListener("click", () => {
+  showActionNotice("Sync gestartet…");
+  fullSync();
+});
+el.advertBtn.addEventListener("click", () => {
+  showActionNotice("Advert wird gesendet…");
+  sendCommand([CMD.SEND_SELF_ADVERT, 1]);
+});
 el.clearLogBtn.addEventListener("click", () => {
   el.log.textContent = "";
 });
@@ -822,6 +829,23 @@ function updateConnectionUi() {
   el.channelTypeSelect.disabled = !state.connected;
   el.createChannelBtn.disabled = !state.connected;
   renderChannels();
+}
+
+let actionNoticeTimer = null;
+
+function showActionNotice(message, variant = "info") {
+  if (!el.actionNotice) return;
+  el.actionNotice.hidden = false;
+  el.actionNotice.textContent = message;
+  el.actionNotice.dataset.variant = variant;
+  el.actionNotice.classList.remove("visible");
+  void el.actionNotice.offsetWidth;
+  el.actionNotice.classList.add("visible");
+  clearTimeout(actionNoticeTimer);
+  actionNoticeTimer = setTimeout(() => {
+    el.actionNotice.classList.remove("visible");
+    el.actionNotice.hidden = true;
+  }, 1800);
 }
 
 function log(message, level = "info") {

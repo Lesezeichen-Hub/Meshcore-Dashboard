@@ -12,11 +12,14 @@
         <h1>MeshCore Dashboard</h1>
         <p id="supportHint">USB-Companion via Web Serial</p>
       </div>
-      <div class="actions">
-        <button id="connectBtn" type="button">Verbinden</button>
-        <button id="syncBtn" type="button" disabled>Sync</button>
-        <button id="advertBtn" type="button" disabled>Advert senden</button>
-        <button id="disconnectBtn" type="button" disabled>Trennen</button>
+      <div class="actions-wrap">
+        <div id="actionNotice" class="action-notice" role="status" aria-live="polite" hidden></div>
+        <div class="actions">
+          <button id="connectBtn" type="button">Verbinden</button>
+          <button id="syncBtn" type="button" disabled>Sync</button>
+          <button id="advertBtn" type="button" disabled>Advert senden</button>
+          <button id="disconnectBtn" type="button" disabled>Trennen</button>
+        </div>
       </div>
     </header>
 
