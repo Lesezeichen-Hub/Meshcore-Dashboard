@@ -68,6 +68,7 @@ const state = {
   pendingAcks: new Map(),
   activeChannel: "all",
   contactSearch: "",
+  unreadChannels: new Map(),
   ackResults: new Map(),
   pendingPings: new Map(),
   lastRf: null,
@@ -133,6 +134,11 @@ el.channelTabs.addEventListener("click", (event) => {
   state.activeChannel = tab.dataset.channelIndex;
   if (state.activeChannel !== "all" && state.activeChannel !== "dm") {
     el.channelSelect.value = String(state.activeChannel);
+    state.unreadChannels.delete(String(state.activeChannel));
+  } else if (state.activeChannel === "dm") {
+    state.unreadChannels.delete("dm");
+  } else {
+    state.unreadChannels.clear();
   }
   renderMessages();
   renderChannelTabs();
@@ -141,6 +147,7 @@ el.channelSelect.addEventListener("change", () => {
   const next = el.channelSelect.value;
   if (next) {
     state.activeChannel = String(next);
+    state.unreadChannels.delete(String(next));
     renderMessages();
     renderChannelTabs();
   }
@@ -735,6 +742,17 @@ function parseChannelData(data) {
 function addMessage(message) {
   state.messages.unshift(message);
   state.messages = state.messages.slice(0, 200);
+
+  if (message.kind === "contact" && state.activeChannel !== "all" && state.activeChannel !== "dm") {
+    state.unreadChannels.set("dm", true);
+  }
+  if ((message.kind === "channel" || message.kind === "data") && message.channel != null) {
+    const channelKey = String(message.channel);
+    if (state.activeChannel !== "all" && state.activeChannel !== channelKey) {
+      state.unreadChannels.set(channelKey, true);
+    }
+  }
+
   persistMessages();
   renderMessages();
 }
@@ -799,9 +817,19 @@ function renderContacts() {
 function renderChannelTabs() {
   const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
   const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: "DM" }, ...visible.map((channel) => ({ key: String(channel.index), label: `#${channel.index} ${channel.name || "Kanal"}` }))];
-  el.channelTabs.innerHTML = tabs.map((tab) => `
-    <button type="button" class="channel-tab${state.activeChannel === tab.key ? " active" : ""}" data-channel-index="${escapeHtml(tab.key)}">${escapeHtml(tab.label)}</button>
-  `).join("");
+  el.channelTabs.innerHTML = tabs.map((tab) => {
+    const unread = tab.key === "dm" ? state.unreadChannels.has("dm") : state.unreadChannels.has(tab.key);
+    return `
+      <button
+        type="button"
+        class="channel-tab${state.activeChannel === tab.key ? " active" : ""}${unread ? " unread" : ""}"
+        data-channel-index="${escapeHtml(tab.key)}"
+        aria-label="${escapeHtml(tab.label)}${unread ? ", neue Nachrichten" : ""}"
+      >
+        ${escapeHtml(tab.label)}
+      </button>
+    `;
+  }).join("");
 }
 
 function renderChannels() {
@@ -846,6 +874,14 @@ function renderChannels() {
 }
 
 function renderMessages() {
+  if (state.activeChannel === "all") {
+    state.unreadChannels.clear();
+  } else if (state.activeChannel === "dm") {
+    state.unreadChannels.delete("dm");
+  } else {
+    state.unreadChannels.delete(String(state.activeChannel));
+  }
+
   const filtered = state.messages.filter((message) => {
     if (state.activeChannel === "all") return true;
     if (state.activeChannel === "dm") return message.kind === "contact";
