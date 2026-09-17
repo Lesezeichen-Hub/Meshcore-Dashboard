@@ -204,7 +204,12 @@ async function fullSync() {
   try {
     await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
     await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
-    await sendAndWait(buildDeviceTime(), [RESP.OK]);
+    try {
+      await sendAndWait(buildDeviceTime(), [RESP.OK]);
+    } catch (error) {
+      // Geraeteuhr laeuft bereits vor unserer PC-Zeit - darf den restlichen Sync nicht blockieren
+      log(`Geraetezeit konnte nicht gesetzt werden: ${error.message}`, "warn");
+    }
     await sendAndWait([CMD.GET_BATT_AND_STORAGE], [RESP.BATTERY]);
     await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
     for (let index = 0; index < state.maxChannels; index += 1) {
