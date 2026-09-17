@@ -1,6 +1,9 @@
 const FRAME_TO_RADIO = 0x3c;
 const FRAME_FROM_RADIO = 0x3e;
 const BAUD_RATE = 115200;
+const BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
 const CMD = {
   APP_START: 0x01,
@@ -58,6 +61,11 @@ const state = {
   port: null,
   reader: null,
   writer: null,
+  transport: null,
+  bluetoothDevice: null,
+  bluetoothServer: null,
+  bluetoothRx: null,
+  bluetoothTx: null,
   connected: false,
   maxChannels: 8,
   frameBuffer: [],
@@ -86,6 +94,7 @@ const state = {
 const el = {
   supportHint: document.querySelector("#supportHint"),
   connectBtn: document.querySelector("#connectBtn"),
+  bleConnectBtn: document.querySelector("#bleConnectBtn"),
   syncBtn: document.querySelector("#syncBtn"),
   advertBtn: document.querySelector("#advertBtn"),
   disconnectBtn: document.querySelector("#disconnectBtn"),
@@ -125,12 +134,20 @@ applyTheme(loadTheme());
 el.autoPongToggle.checked = state.autoPongEnabled;
 applyChatDensity(loadChatDensity());
 
-if (!("serial" in navigator)) {
-  el.supportHint.textContent = "Dieser Browser unterstuetzt Web Serial nicht. Nutze Chrome oder Edge.";
+if (!("serial" in navigator) && !("bluetooth" in navigator)) {
+  el.supportHint.textContent = "Dieser Browser unterstützt weder Web Serial noch Web Bluetooth. Nutze Chrome oder Edge.";
   el.connectBtn.disabled = true;
+  el.bleConnectBtn.disabled = true;
+} else if (!("serial" in navigator)) {
+  el.supportHint.textContent = "USB wird nicht unterstützt; Bluetooth ist verfügbar.";
+  el.connectBtn.disabled = true;
+} else if (!("bluetooth" in navigator)) {
+  el.supportHint.textContent = "Bluetooth wird nicht unterstützt; USB ist verfügbar.";
+  el.bleConnectBtn.disabled = true;
 }
 
-el.connectBtn.addEventListener("click", connect);
+el.connectBtn.addEventListener("click", connectUsb);
+el.bleConnectBtn.addEventListener("click", connectBluetooth);
 el.themeToggle.addEventListener("click", () => {
   const theme = document.documentElement.dataset.theme === "mono" ? "default" : "mono";
   applyTheme(theme);
@@ -251,6 +268,23 @@ el.contacts.addEventListener("click", (event) => {
   }
 });
 el.messages.addEventListener("click", (event) => {
+  const channelReplyBtn = event.target.closest("button[data-channel-reply-index]");
+  if (channelReplyBtn) {
+    const message = state.messages[Number(channelReplyBtn.dataset.channelReplyIndex)];
+    const reply = message ? getChannelReply(message) : null;
+    if (!reply) return;
+    state.activeChannel = String(message.channel);
+    state.dmTarget = null;
+    state.unreadChannels.delete(state.activeChannel);
+    el.channelSelect.value = state.activeChannel;
+    updateMessageInputPlaceholder();
+    renderMessages();
+    renderChannelTabs();
+    el.messageInput.value = `@[${reply.sender}] `;
+    el.messageInput.focus();
+    el.messageInput.setSelectionRange(el.messageInput.value.length, el.messageInput.value.length);
+    return;
+  }
   const pongBtn = event.target.closest("button[data-pong-index]");
   if (pongBtn) {
     const message = state.messages[Number(pongBtn.dataset.pongIndex)];
@@ -275,11 +309,12 @@ el.messages.addEventListener("click", (event) => {
   renderChannelTabs();
 });
 
-async function connect() {
+async function connectUsb() {
   try {
     state.port = await navigator.serial.requestPort();
     await state.port.open({ baudRate: BAUD_RATE, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" });
     state.writer = state.port.writable.getWriter();
+    state.transport = "usb";
     state.connected = true;
     updateConnectionUi();
     const portInfo = state.port.getInfo();
@@ -295,8 +330,66 @@ async function connect() {
   }
 }
 
-async function disconnect() {
+async function connectBluetooth() {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [BLE_SERVICE_UUID] }],
+      optionalServices: [BLE_SERVICE_UUID],
+    });
+    state.bluetoothDevice = device;
+    device.addEventListener("gattserverdisconnected", handleBluetoothDisconnected);
+    const server = await device.gatt.connect();
+    state.bluetoothServer = server;
+    const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+    const rx = await service.getCharacteristic(BLE_RX_UUID);
+    const tx = await service.getCharacteristic(BLE_TX_UUID);
+    tx.addEventListener("characteristicvaluechanged", handleBluetoothNotification);
+    await tx.startNotifications();
+
+    state.bluetoothRx = rx;
+    state.bluetoothTx = tx;
+    state.transport = "bluetooth";
+    state.connected = true;
+    updateConnectionUi();
+    log(`Bluetooth verbunden: ${device.name || "MeshCore-Gerät"}.`);
+    await pause(500);
+    await fullSync();
+  } catch (error) {
+    if (error.name !== "NotFoundError") {
+      log(`Bluetooth-Verbindung fehlgeschlagen: ${error.message}`, "error");
+    }
+    await disconnect();
+  }
+}
+
+function handleBluetoothNotification(event) {
+  const value = event.target.value;
+  if (!value) return;
+  const packet = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  log(`Bluetooth RX ${toHex(packet)}`);
+  handlePacket(packet);
+}
+
+function handleBluetoothDisconnected() {
+  if (state.transport !== "bluetooth") return;
   state.connected = false;
+  state.transport = null;
+  rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
+  state.bluetoothTx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
+  state.bluetoothDevice?.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
+  state.bluetoothDevice = null;
+  state.bluetoothServer = null;
+  state.bluetoothRx = null;
+  state.bluetoothTx = null;
+  updateConnectionUi();
+  log("Bluetooth-Verbindung wurde getrennt.", "error");
+}
+
+async function disconnect() {
+  const transport = state.transport;
+  state.connected = false;
+  state.transport = null;
+  rejectPendingWaiters(new Error("Verbindung getrennt."));
   try {
     if (state.reader) {
       await state.reader.cancel();
@@ -313,11 +406,27 @@ async function disconnect() {
       await state.port.close();
     }
   } catch {}
+  try {
+    if (state.bluetoothTx) {
+      state.bluetoothTx.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
+      await state.bluetoothTx.stopNotifications();
+    }
+  } catch {}
+  try {
+    if (state.bluetoothDevice) {
+      state.bluetoothDevice.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
+      if (state.bluetoothDevice.gatt?.connected) state.bluetoothDevice.gatt.disconnect();
+    }
+  } catch {}
   state.port = null;
   state.reader = null;
   state.writer = null;
+  state.bluetoothDevice = null;
+  state.bluetoothServer = null;
+  state.bluetoothRx = null;
+  state.bluetoothTx = null;
   updateConnectionUi();
-  log("USB getrennt.");
+  if (transport) log(`${transport === "bluetooth" ? "Bluetooth" : "USB"} getrennt.`);
 }
 
 async function readLoop() {
@@ -364,7 +473,7 @@ async function fullSync() {
     await drainMessages();
     log("Synchronisierung abgeschlossen.");
   } catch (error) {
-    log(`${error.message} Pruefe, ob der ausgewaehlte Port die MeshCore Companion-USB-Firmware nutzt.`, "error");
+    log(`${error.message} Prüfe, ob das ausgewählte Gerät eine MeshCore Companion-Firmware nutzt.`, "error");
   }
 }
 
@@ -486,15 +595,32 @@ async function sendAndWait(payload, responseCodes, timeoutMs = 2500) {
 }
 
 async function sendCommand(payloadLike) {
-  if (!state.writer) return;
   const payload = payloadLike instanceof Uint8Array ? payloadLike : Uint8Array.from(payloadLike);
-  const frame = new Uint8Array(3 + payload.length);
-  frame[0] = FRAME_TO_RADIO;
-  frame[1] = payload.length & 0xff;
-  frame[2] = (payload.length >> 8) & 0xff;
-  frame.set(payload, 3);
-  await state.writer.write(frame);
+  if (state.transport === "bluetooth" && state.bluetoothRx) {
+    if (typeof state.bluetoothRx.writeValueWithResponse === "function") {
+      await state.bluetoothRx.writeValueWithResponse(payload);
+    } else {
+      await state.bluetoothRx.writeValue(payload);
+    }
+  } else if (state.transport === "usb" && state.writer) {
+    const frame = new Uint8Array(3 + payload.length);
+    frame[0] = FRAME_TO_RADIO;
+    frame[1] = payload.length & 0xff;
+    frame[2] = (payload.length >> 8) & 0xff;
+    frame.set(payload, 3);
+    await state.writer.write(frame);
+  } else {
+    throw new Error("Keine aktive Verbindung.");
+  }
   log(payload[0] === CMD.SET_CHANNEL ? "TX SET_CHANNEL [Schluessel verborgen]" : `TX ${toHex(payload)}`);
+}
+
+function rejectPendingWaiters(error) {
+  const waiters = state.waiters.splice(0);
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
 }
 
 function ingestBytes(bytes) {
@@ -1098,12 +1224,17 @@ function renderMessages() {
     const pongButton = pingReply
       ? `<button type="button" class="secondary" data-pong-index="${state.messages.indexOf(message)}"${state.connected ? "" : " disabled"}>Pong</button>`
       : "";
+    const channelReply = getChannelReply(message);
+    const channelReplyButton = channelReply
+      ? `<button type="button" class="secondary channel-reply-button" data-channel-reply-index="${state.messages.indexOf(message)}" title="${escapeHtml(channelReply.sender)} antworten" aria-label="${escapeHtml(channelReply.sender)} antworten">Antworten</button>`
+      : "";
     return `
       <div class="message${isDm ? " dm" : ""}">
         <div class="message-head">
           <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
           ${pongButton}
+          ${channelReplyButton}
           ${replyButton}
         </div>
         <span class="message-text">${renderMessageText(message)}</span>
@@ -1181,6 +1312,17 @@ function getPingReply(message) {
 
   const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
   return { text: `@[${sender}] Pong - ${hops} Hops`, sender, hops };
+}
+
+function getChannelReply(message) {
+  if (message.kind !== "channel" || message.channel == null) return null;
+  const text = String(message.text || "");
+  const separator = text.indexOf(":");
+  if (separator < 1) return null;
+  const sender = text.slice(0, separator).trim();
+  const body = text.slice(separator + 1).trimStart();
+  if (!sender || body.startsWith("@[")) return null;
+  return { sender };
 }
 
 function queueAutoPong(message) {
@@ -1268,8 +1410,10 @@ function updateMessageInputPlaceholder() {
 }
 
 function updateConnectionUi() {
-  el.connectionState.textContent = state.connected ? "Verbunden" : "Nicht verbunden";
+  const transportLabel = state.transport === "bluetooth" ? "Bluetooth" : state.transport === "usb" ? "USB" : null;
+  el.connectionState.textContent = state.connected ? `Verbunden (${transportLabel})` : "Nicht verbunden";
   el.connectBtn.disabled = state.connected || !("serial" in navigator);
+  el.bleConnectBtn.disabled = state.connected || !("bluetooth" in navigator);
   el.syncBtn.disabled = !state.connected;
   el.advertBtn.disabled = !state.connected;
   el.disconnectBtn.disabled = !state.connected;
