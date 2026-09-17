@@ -70,6 +70,7 @@ const state = {
   pendingAcks: new Map(),
   activeChannel: "all",
   contactSearch: "",
+  dmTarget: null,
   unreadChannels: new Map(),
   ackResults: new Map(),
   pendingPings: new Map(),
@@ -137,11 +138,21 @@ el.channelTabs.addEventListener("click", (event) => {
   if (state.activeChannel !== "all" && state.activeChannel !== "dm") {
     el.channelSelect.value = String(state.activeChannel);
     state.unreadChannels.delete(String(state.activeChannel));
+    state.dmTarget = null;
   } else if (state.activeChannel === "dm") {
     state.unreadChannels.delete("dm");
+    if (!state.dmTarget) {
+      const latestDm = [...state.messages].find((message) => message.kind === "contact");
+      if (latestDm && latestDm.prefix) {
+        const contact = [...state.contacts.values()].find((item) => item.prefix === latestDm.prefix);
+        if (contact) state.dmTarget = contact.key;
+      }
+    }
   } else {
     state.unreadChannels.clear();
+    state.dmTarget = null;
   }
+  updateMessageInputPlaceholder();
   renderMessages();
   renderChannelTabs();
 });
@@ -150,6 +161,8 @@ el.channelSelect.addEventListener("change", () => {
   if (next) {
     state.activeChannel = String(next);
     state.unreadChannels.delete(String(next));
+    state.dmTarget = null;
+    updateMessageInputPlaceholder();
     renderMessages();
     renderChannelTabs();
   }
@@ -160,10 +173,14 @@ el.clearLogBtn.addEventListener("click", () => {
 el.sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = el.messageInput.value.trim();
-  const channel = Number(el.channelSelect.value || 0);
   if (!text) return;
   try {
-    await sendChannelMessage(channel, text);
+    if (state.activeChannel === "dm" && state.dmTarget) {
+      await sendDirectMessage(state.dmTarget, text);
+    } else {
+      const channel = Number(el.channelSelect.value || 0);
+      await sendChannelMessage(channel, text);
+    }
     el.messageInput.value = "";
   } catch (error) {
     log(`Nachricht konnte nicht gesendet werden: ${error.message}`, "error");
@@ -171,8 +188,30 @@ el.sendForm.addEventListener("submit", async (event) => {
 });
 el.channelForm.addEventListener("submit", createChannel);
 el.contacts.addEventListener("click", (event) => {
-  const btn = event.target.closest("button[data-ping]");
-  if (btn) pingContact(btn.dataset.ping);
+  const pingBtn = event.target.closest("button[data-ping]");
+  if (pingBtn) {
+    pingContact(pingBtn.dataset.ping);
+    return;
+  }
+  const dmBtn = event.target.closest("button[data-dm]");
+  if (dmBtn) {
+    state.activeChannel = "dm";
+    state.dmTarget = dmBtn.dataset.dm;
+    updateMessageInputPlaceholder();
+    renderMessages();
+    renderChannelTabs();
+  }
+});
+el.messages.addEventListener("click", (event) => {
+  const replyBtn = event.target.closest("button[data-reply]");
+  if (!replyBtn) return;
+  const contact = [...state.contacts.values()].find((item) => item.prefix === replyBtn.dataset.reply);
+  if (!contact) return;
+  state.activeChannel = "dm";
+  state.dmTarget = contact.key;
+  updateMessageInputPlaceholder();
+  renderMessages();
+  renderChannelTabs();
 });
 
 async function connect() {
@@ -504,6 +543,35 @@ function handlePacket(data) {
   }
 }
 
+async function sendDirectMessage(key, text) {
+  const contact = state.contacts.get(key);
+  if (!contact || !state.connected) return;
+
+  const payload = new Uint8Array(13 + encodeText(text).length);
+  payload[0] = CMD.SEND_TXT_MSG;
+  payload[1] = TXT_TYPE_PLAIN;
+  payload[2] = 0;
+  writeU32(payload, 3, Math.floor(Date.now() / 1000));
+  payload.set(hexToBytes(contact.key.slice(0, 12)), 7);
+  payload.set(encodeText(text), 13);
+
+  const response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 8000);
+  const ackCode = response[0] === RESP.SENT ? readU32(response, 2) : null;
+  addMessage({
+    kind: "contact",
+    outgoing: true,
+    prefix: contact.prefix,
+    pathLen: 0,
+    textType: TXT_TYPE_PLAIN,
+    timestamp: Math.floor(Date.now() / 1000),
+    text,
+    ackCode,
+    delivery: ackCode ? "Bestätigung ausstehend" : "An Funk übergeben",
+    sendResult: response[0] === RESP.SENT ? signedByte(response[1] ?? 0) : 0,
+  });
+  return response;
+}
+
 async function pingContact(key) {
   const contact = state.contacts.get(key);
   if (!contact || !state.connected) return;
@@ -817,7 +885,10 @@ function renderContacts() {
             <td>${renderLocationLink(contact.lat, contact.lon)}</td>
             <td>${formatTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
-            <td>${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button>` : "-"}</td>
+            <td>
+              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button>` : "-"}
+              <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>
+            </td>
           </tr>
         `).join("")}
       </tbody>
@@ -893,7 +964,7 @@ function renderMessages() {
 
   const filtered = state.messages.filter((message) => {
     if (state.activeChannel === "all") return true;
-    if (state.activeChannel === "dm") return message.kind === "contact";
+    if (state.activeChannel === "dm") return message.kind === "contact" || message.outgoing === true;
     if (message.kind === "channel" || message.kind === "data" || message.kind === "out") {
       return Number(message.channel) === Number(state.activeChannel);
     }
@@ -911,13 +982,14 @@ function renderMessages() {
   }
   el.messages.className = "messages";
   el.messages.innerHTML = filtered.slice(0, 30).map((message) => {
-    const isDm = message.kind === "contact";
+    const isDm = message.kind === "contact" || message.outgoing === true;
     const channelName = message.channel == null ? "" : state.channels.get(message.channel)?.name;
     const channelLabel = `#${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
     const contactName = message.prefix
       ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)?.name
       : null;
-    const direction = message.kind === "out" ? "Gesendet" : "Empfangen";
+    const isOutgoing = message.kind === "out" || message.outgoing === true;
+    const direction = isOutgoing ? "Gesendet" : "Empfangen";
     const badge = isDm ? "DM" : channelLabel;
     const peer = isDm ? (contactName || message.prefix || "unbekannt") : null;
     const meta = [
@@ -933,17 +1005,35 @@ function renderMessages() {
         ? `Timeout ${message.estimatedTimeout} ms`
         : null,
     ].filter(Boolean).join(" | ");
+    const replyButton = isDm && message.prefix
+      ? `<button type="button" class="secondary" data-reply="${escapeHtml(message.prefix)}">Antworten</button>`
+      : "";
     return `
       <div class="message${isDm ? " dm" : ""}">
         <div class="message-head">
           <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
+          ${replyButton}
         </div>
         <span class="message-text">${escapeHtml(message.text || "")}</span>
         <span class="meta">${escapeHtml(meta)}</span>
       </div>
     `;
   }).join("");
+}
+
+function updateMessageInputPlaceholder() {
+  if (state.activeChannel === "dm" && state.dmTarget) {
+    const contact = state.contacts.get(state.dmTarget);
+    el.messageInput.placeholder = contact ? `Nachricht an ${contact.name}` : "Nachricht an Direktkontakt";
+    return;
+  }
+  if (state.activeChannel !== "all") {
+    const channel = state.channels.get(Number(state.activeChannel));
+    el.messageInput.placeholder = channel ? `Nachricht an ${channel.name || `Kanal ${state.activeChannel}`}` : "Nachricht an Kanal";
+    return;
+  }
+  el.messageInput.placeholder = "Nachricht an Kanal";
 }
 
 function updateConnectionUi() {
@@ -955,6 +1045,7 @@ function updateConnectionUi() {
   el.channelNameInput.disabled = !state.connected;
   el.channelTypeSelect.disabled = !state.connected;
   el.createChannelBtn.disabled = !state.connected;
+  updateMessageInputPlaceholder();
   renderChannels();
   renderMessages();
 }
