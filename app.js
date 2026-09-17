@@ -9,11 +9,13 @@ const CMD = {
   SET_DEVICE_TIME: 0x06,
   SEND_SELF_ADVERT: 0x07,
   SYNC_NEXT_MESSAGE: 0x0a,
+  RESET_PATH: 0x0d,
   GET_BATT_AND_STORAGE: 0x14,
   DEVICE_QUERY: 0x16,
   GET_CHANNEL: 0x1f,
   SET_CHANNEL: 0x20,
   SEND_TRACE_PATH: 0x24,
+  SET_PATH_HASH_MODE: 0x3d,
 };
 
 const RESP = {
@@ -488,7 +490,8 @@ async function pingContact(key) {
   const hashCount = contact.outPathLenRaw & 0x3f;
   const pathSz = hashSize === 1 ? 0 : hashSize === 2 ? 1 : null;
   if (pathSz == null || hashCount === 0) {
-    log(`Pfad-Hashgroesse von ${contact.name} wird von Trace nicht unterstuetzt.`, "error");
+    log(`Pfad-Hashgroesse von ${contact.name} wird von Trace nicht unterstuetzt, repariere Pfad-Modus...`, "error");
+    await repairPathHashMode(contact);
     return;
   }
   const pathBytes = contact.outPathRaw.slice(0, hashCount * hashSize);
@@ -559,6 +562,24 @@ function findChannelByName(name) {
   return [...state.channels.values()].find(
     (channel) => (channel.name || "").replace(/^#/, "").toLowerCase() === normalized,
   );
+}
+
+async function repairPathHashMode(contact) {
+  try {
+    await sendAndWait([CMD.SET_PATH_HASH_MODE, 0, 0], [RESP.OK]);
+    await sendAndWait([CMD.RESET_PATH, ...hexToBytes(contact.key)], [RESP.OK]);
+    log(`Pfad-Modus auf 1-Byte-Hashes gesetzt und alten Pfad zu ${contact.name} verworfen. Warte auf erneute Kommunikation, dann ist Ping wieder moeglich.`);
+  } catch (error) {
+    log(`Pfad-Modus konnte nicht repariert werden: ${error.message}`, "error");
+  }
+}
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
 }
 
 function randomUint32() {
