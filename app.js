@@ -51,7 +51,7 @@ const TYPE_NAMES = {
 };
 
 const TXT_TYPE_PLAIN = 0;
-const PING_TARGET_CHANNEL = "test";
+const PING_TARGET_CHANNEL = "ping";
 
 const state = {
   port: null,
