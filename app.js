@@ -826,7 +826,7 @@ function renderContacts() {
 
 function renderChannelTabs() {
   const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
-  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: "DM" }, ...visible.map((channel) => ({ key: String(channel.index), label: `#${channel.index} ${channel.name || "Kanal"}` }))];
+  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: "DM" }, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
   el.channelTabs.innerHTML = tabs.map((tab) => {
     const unread = tab.key === "dm" ? state.unreadChannels.has("dm") : state.unreadChannels.has(tab.key);
     return `
