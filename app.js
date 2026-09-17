@@ -469,6 +469,10 @@ function handlePacket(data) {
 async function pingContact(key) {
   const contact = state.contacts.get(key);
   if (!contact || !state.connected) return;
+  if (contact.type !== 1) {
+    log(`Ping ist nur fuer Clients moeglich, ${contact.name} ist ${TYPE_NAMES[contact.type] || "unbekannt"}.`, "error");
+    return;
+  }
 
   const targetChannel = findChannelByName(PING_TARGET_CHANNEL);
   if (!targetChannel) {
@@ -736,7 +740,7 @@ function renderContacts() {
             <td>${renderLocationLink(contact.lat, contact.lon)}</td>
             <td>${formatTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
-            <td><button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button></td>
+            <td>${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button>` : "-"}</td>
           </tr>
         `).join("")}
       </tbody>
