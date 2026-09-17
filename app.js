@@ -4,6 +4,7 @@ const BAUD_RATE = 115200;
 
 const CMD = {
   APP_START: 0x01,
+  SEND_TXT_MSG: 0x02,
   SEND_CHANNEL_TXT_MSG: 0x03,
   GET_CONTACTS: 0x04,
   SET_DEVICE_TIME: 0x06,
@@ -49,6 +50,9 @@ const TYPE_NAMES = {
   4: "Sensor",
 };
 
+const TXT_TYPE_PLAIN = 0;
+const PING_TARGET_CHANNEL = "test";
+
 const state = {
   port: null,
   reader: null,
@@ -63,6 +67,8 @@ const state = {
   waiters: [],
   pendingAcks: new Map(),
   ackResults: new Map(),
+  pendingPings: new Map(),
+  lastRf: null,
 };
 
 const el = {
@@ -122,6 +128,10 @@ el.sendForm.addEventListener("submit", async (event) => {
   }
 });
 el.channelForm.addEventListener("submit", createChannel);
+el.contacts.addEventListener("click", (event) => {
+  const btn = event.target.closest("button[data-ping]");
+  if (btn) pingContact(btn.dataset.ping);
+});
 
 async function connect() {
   try {
@@ -447,6 +457,86 @@ function handlePacket(data) {
   }
 }
 
+async function pingContact(key) {
+  const contact = state.contacts.get(key);
+  if (!contact || !state.connected) return;
+
+  const targetChannel = findChannelByName(PING_TARGET_CHANNEL);
+  if (!targetChannel) {
+    log(`Kanal #${PING_TARGET_CHANNEL} nicht gefunden - bitte zuerst anlegen.`, "error");
+    return;
+  }
+
+  const payload = new Uint8Array(13 + 4);
+  payload[0] = CMD.SEND_TXT_MSG;
+  payload[1] = TXT_TYPE_PLAIN;
+  payload[2] = 0; // attempt
+  writeU32(payload, 3, Math.floor(Date.now() / 1000));
+  payload.set(hexToBytes(contact.key.slice(0, 12)), 7);
+  payload.set(encodeText("ping"), 13);
+
+  try {
+    const response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 8000);
+    const ackCode = response[0] === RESP.SENT ? readU32(response, 2) : null;
+    if (!ackCode) {
+      log(`Ping an ${contact.name} gesendet, aber kein ACK erwartet.`);
+      return;
+    }
+    const pending = { contact, channelIndex: targetChannel.index };
+    const earlyRoundTrip = state.ackResults.get(ackCode);
+    if (earlyRoundTrip != null) {
+      state.ackResults.delete(ackCode);
+      finalizePing(pending, earlyRoundTrip);
+    } else {
+      state.pendingPings.set(ackCode, pending);
+    }
+    log(`Ping an ${contact.name} gesendet, warte auf Antwort...`);
+  } catch (error) {
+    log(`Ping an ${contact.name} fehlgeschlagen: ${error.message}`, "error");
+  }
+}
+
+async function finalizePing(pending, roundTrip) {
+  const contact = state.contacts.get(pending.contact.key) || pending.contact;
+  const path = formatPathHashes(contact.outPathLenRaw, contact.outPathRaw);
+  const rf = state.lastRf && Date.now() - state.lastRf.receivedAt < 5000 ? state.lastRf : null;
+  const snrText = rf ? `${rf.snr.toFixed(2)} dB` : "-";
+  const rssiText = rf ? `${rf.rssi} dBm` : "-";
+  const text = `ack @${contact.name}: ${path.list || "-"} (${path.hops} hops) | SNR: ${snrText} | RSSI: ${rssiText} | Received at: ${new Date().toLocaleString()} | Roundtrip: ${roundTrip} ms`;
+  log(`Ping-Antwort von ${contact.name} erhalten (${roundTrip} ms).`);
+  try {
+    await sendChannelMessage(pending.channelIndex, text);
+  } catch (error) {
+    log(`Ping-Ergebnis konnte nicht in Kanal gepostet werden: ${error.message}`, "error");
+  }
+}
+
+function formatPathHashes(pathLenRaw, rawBytes) {
+  if (pathLenRaw == null || pathLenRaw === 0xff || !rawBytes) return { list: null, hops: 0 };
+  const hashSize = (pathLenRaw >> 6) + 1;
+  const hashCount = pathLenRaw & 0x3f;
+  const groups = [];
+  for (let i = 0; i < hashCount; i += 1) {
+    groups.push(sliceHex(rawBytes, i * hashSize, i * hashSize + hashSize));
+  }
+  return { list: groups.join(","), hops: hashCount };
+}
+
+function findChannelByName(name) {
+  const normalized = name.replace(/^#/, "").toLowerCase();
+  return [...state.channels.values()].find(
+    (channel) => (channel.name || "").replace(/^#/, "").toLowerCase() === normalized,
+  );
+}
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
 function parseSelfInfo(data) {
   const pub = sliceHex(data, 4, 36);
   const lat = readI32(data, 36);
@@ -495,6 +585,8 @@ function parseContact(data) {
     type: data[33],
     flags: data[34],
     outPathLen: pathLenRaw > 127 ? pathLenRaw - 256 : pathLenRaw,
+    outPathLenRaw: pathLenRaw,
+    outPathRaw: data.slice(36, 100),
     name: decodeCString(data, 100, 32) || key.slice(0, 12),
     lastAdvert: readU32(data, 132),
     lat: readI32(data, 136),
@@ -554,6 +646,12 @@ function parseChannelMessage(data) {
 function parseAck(data) {
   const ackCode = readU32(data, 1);
   const roundTrip = readU32(data, 5);
+  const pendingPing = state.pendingPings.get(ackCode);
+  if (pendingPing) {
+    state.pendingPings.delete(ackCode);
+    finalizePing(pendingPing, roundTrip);
+    return;
+  }
   const message = state.pendingAcks.get(ackCode);
   if (!message) {
     state.ackResults.set(ackCode, roundTrip);
@@ -568,6 +666,7 @@ function parseLogData(data) {
   if (data.length < 3) return;
   const snr = signedByte(data[1]) / 4;
   const rssi = signedByte(data[2]);
+  state.lastRf = { snr, rssi, receivedAt: Date.now() };
   log(`RF-Paket empfangen: SNR ${snr.toFixed(1)} dB, RSSI ${rssi} dBm.`);
 }
 
@@ -608,7 +707,7 @@ function renderContacts() {
   el.contacts.className = "table";
   el.contacts.innerHTML = `
     <table class="contact-table">
-      <thead><tr><th>Name</th><th>Typ</th><th>Routing</th><th>Signal</th><th>Position</th><th>Letztes Advert</th><th>Public Key</th></tr></thead>
+      <thead><tr><th>Name</th><th>Typ</th><th>Routing</th><th>Signal</th><th>Position</th><th>Letztes Advert</th><th>Public Key</th><th>Aktion</th></tr></thead>
       <tbody>
         ${contacts.map((contact) => `
           <tr>
@@ -619,6 +718,7 @@ function renderContacts() {
             <td>${renderLocationLink(contact.lat, contact.lon)}</td>
             <td>${formatTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
+            <td><button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button></td>
           </tr>
         `).join("")}
       </tbody>
