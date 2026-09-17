@@ -90,11 +90,23 @@
         <article class="panel span-2">
           <div class="panel-head">
             <h2>Nachrichten</h2>
-            <form id="sendForm" class="send-form">
-              <select id="channelSelect" aria-label="Kanal" disabled></select>
-              <input id="messageInput" type="text" maxlength="150" placeholder="Nachricht an Kanal" disabled>
-              <button id="sendBtn" type="submit" disabled>Senden</button>
-            </form>
+            <div class="message-controls">
+              <label class="switch-control" title="Ping-Nachrichten automatisch beantworten">
+                <input id="autoPongToggle" type="checkbox">
+                <span class="switch-track" aria-hidden="true"></span>
+                <span>Auto-Pong</span>
+              </label>
+              <label class="switch-control" title="Kompakte Chatansicht">
+                <input id="compactChatToggle" type="checkbox">
+                <span class="switch-track" aria-hidden="true"></span>
+                <span>Kompakt</span>
+              </label>
+              <form id="sendForm" class="send-form">
+                <select id="channelSelect" aria-label="Kanal" disabled></select>
+                <input id="messageInput" type="text" maxlength="150" placeholder="Nachricht an Kanal" disabled>
+                <button id="sendBtn" type="submit" disabled>Senden</button>
+              </form>
+            </div>
           </div>
           <div id="channelTabs" class="channel-tabs" aria-label="Kanäle"></div>
           <div id="messages" class="messages empty">Noch keine Nachrichten.</div>

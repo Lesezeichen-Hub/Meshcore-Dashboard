@@ -52,6 +52,7 @@ const TYPE_NAMES = {
 
 const TXT_TYPE_PLAIN = 0;
 const PING_TARGET_CHANNEL = "ping";
+const AUTO_PONG_COOLDOWN_MS = 15000;
 
 const state = {
   port: null,
@@ -75,6 +76,11 @@ const state = {
   ackResults: new Map(),
   pendingPings: new Map(),
   lastRf: null,
+  autoPongEnabled: loadAutoPongSetting(),
+  autoPongHandled: loadHandledPings(),
+  autoPongCooldowns: new Map(),
+  autoPongQueue: [],
+  autoPongTimer: null,
 };
 
 const el = {
@@ -111,9 +117,13 @@ const el = {
   clearLogBtn: document.querySelector("#clearLogBtn"),
   actionNotice: document.querySelector("#actionNotice"),
   themeToggle: document.querySelector("#themeToggle"),
+  autoPongToggle: document.querySelector("#autoPongToggle"),
+  compactChatToggle: document.querySelector("#compactChatToggle"),
 };
 
 applyTheme(loadTheme());
+el.autoPongToggle.checked = state.autoPongEnabled;
+applyChatDensity(loadChatDensity());
 
 if (!("serial" in navigator)) {
   el.supportHint.textContent = "Dieser Browser unterstuetzt Web Serial nicht. Nutze Chrome oder Edge.";
@@ -128,6 +138,24 @@ el.themeToggle.addEventListener("click", () => {
     localStorage.setItem("meshcore-dashboard-theme", theme);
   } catch {
     // The selected theme still applies for this session.
+  }
+});
+el.autoPongToggle.addEventListener("change", () => {
+  state.autoPongEnabled = el.autoPongToggle.checked;
+  try {
+    localStorage.setItem("meshcore-dashboard-auto-pong", String(state.autoPongEnabled));
+  } catch {
+    // The setting still applies for this session.
+  }
+  showActionNotice(`Auto-Pong ${state.autoPongEnabled ? "aktiviert" : "deaktiviert"}.`);
+});
+el.compactChatToggle.addEventListener("change", () => {
+  const density = el.compactChatToggle.checked ? "compact" : "comfortable";
+  applyChatDensity(density);
+  try {
+    localStorage.setItem("meshcore-dashboard-chat-density", density);
+  } catch {
+    // The selected density still applies for this session.
   }
 });
 el.disconnectBtn.addEventListener("click", disconnect);
@@ -652,10 +680,13 @@ async function pingContact(key) {
 async function finalizePing(pending, roundTrip) {
   const contact = state.contacts.get(pending.contact.key) || pending.contact;
   const path = formatPathHashes(contact.outPathLenRaw, contact.outPathRaw);
+  const pathText = path.hashes?.length
+    ? path.hashes.map(formatRepeaterHash).join(" -> ")
+    : "-";
   const rf = state.lastRf && Date.now() - state.lastRf.receivedAt < 5000 ? state.lastRf : null;
   const snrText = rf ? `${rf.snr.toFixed(2)} dB` : "-";
   const rssiText = rf ? `${rf.rssi} dBm` : "-";
-  const text = `ack @${contact.name}: ${path.list || "-"} (${path.hops} hops) | SNR: ${snrText} | RSSI: ${rssiText} | Received at: ${new Date().toLocaleString()} | Roundtrip: ${roundTrip} ms`;
+  const text = `ack @${contact.name}: ${pathText} (${path.hops} hops) | SNR: ${snrText} | RSSI: ${rssiText} | Received at: ${new Date().toLocaleString()} | Roundtrip: ${roundTrip} ms`;
   log(`Ping-Antwort von ${contact.name} erhalten (${roundTrip} ms).`);
   try {
     await sendChannelMessage(pending.channelIndex, text);
@@ -665,14 +696,24 @@ async function finalizePing(pending, roundTrip) {
 }
 
 function formatPathHashes(pathLenRaw, rawBytes) {
-  if (pathLenRaw == null || pathLenRaw === 0xff || !rawBytes) return { list: null, hops: 0 };
+  if (pathLenRaw == null || pathLenRaw === 0xff || !rawBytes) return { list: null, hashes: [], hops: 0 };
   const hashSize = (pathLenRaw >> 6) + 1;
   const hashCount = pathLenRaw & 0x3f;
   const groups = [];
   for (let i = 0; i < hashCount; i += 1) {
     groups.push(sliceHex(rawBytes, i * hashSize, i * hashSize + hashSize));
   }
-  return { list: groups.join(","), hops: hashCount };
+  return { list: groups.join(","), hashes: groups, hops: hashCount };
+}
+
+function formatRepeaterHash(hash) {
+  const normalized = hash.toLowerCase();
+  const matches = [...state.contacts.values()].filter(
+    (contact) => contact.type === 2 && contact.key?.toLowerCase().startsWith(normalized),
+  );
+  if (matches.length === 1) return `${matches[0].name} (${hash})`;
+  if (matches.length > 1) return `${hash} [${matches.map((contact) => contact.name).join(" / ")}]`;
+  return hash;
 }
 
 function findChannelByName(name) {
@@ -787,7 +828,7 @@ function parseContactMessage(data) {
 function parseChannelMessage(data) {
   const v3 = data[0] === RESP.CHANNEL_MSG_V3;
   const offset = v3 ? 4 : 1;
-  addMessage({
+  const message = {
     kind: "channel",
     channel: data[offset],
     pathLen: data[offset + 1],
@@ -795,7 +836,9 @@ function parseChannelMessage(data) {
     timestamp: readU32(data, offset + 3),
     text: decodeUtf8(data.slice(offset + 7)),
     snr: v3 ? signedByte(data[1]) / 4 : null,
-  });
+  };
+  addMessage(message);
+  queueAutoPong(message);
 }
 
 function parseAck(data) {
@@ -1109,6 +1152,20 @@ function applyTheme(theme) {
     : "Monochromen Dark Mode einschalten");
 }
 
+function loadChatDensity() {
+  try {
+    return localStorage.getItem("meshcore-dashboard-chat-density") === "compact" ? "compact" : "comfortable";
+  } catch {
+    return "comfortable";
+  }
+}
+
+function applyChatDensity(density) {
+  const compact = density === "compact";
+  document.documentElement.dataset.chatDensity = compact ? "compact" : "comfortable";
+  el.compactChatToggle.checked = compact;
+}
+
 function getPingReply(message) {
   if (message.kind !== "channel" || message.channel == null) return null;
   const channelName = state.channels.get(message.channel)?.name || "";
@@ -1123,6 +1180,76 @@ function getPingReply(message) {
 
   const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
   return { text: `@[${sender}] Pong - ${hops} Hops`, sender, hops };
+}
+
+function queueAutoPong(message) {
+  if (!state.autoPongEnabled || !getPingReply(message)) return;
+  state.autoPongQueue.push(message);
+  clearTimeout(state.autoPongTimer);
+  state.autoPongTimer = setTimeout(flushAutoPongQueue, 1000);
+}
+
+async function flushAutoPongQueue() {
+  state.autoPongTimer = null;
+  const queued = state.autoPongQueue.splice(0);
+  for (const message of queued) {
+    await maybeSendAutoPong(message);
+  }
+}
+
+async function maybeSendAutoPong(message) {
+  if (!state.autoPongEnabled || !state.connected) return;
+  const reply = getPingReply(message);
+  if (!reply) return;
+
+  const fingerprint = `${message.channel}\u001f${message.timestamp}\u001f${message.text}`;
+  if (state.autoPongHandled.has(fingerprint)) return;
+  rememberHandledPing(fingerprint);
+
+  const senderKey = reply.sender.toLowerCase();
+  const now = Date.now();
+  const lastReply = state.autoPongCooldowns.get(senderKey) || 0;
+  if (now - lastReply < AUTO_PONG_COOLDOWN_MS) {
+    log(`Auto-Pong an ${reply.sender} wegen Cooldown übersprungen.`);
+    return;
+  }
+  state.autoPongCooldowns.set(senderKey, now);
+
+  try {
+    await sendChannelMessage(message.channel, reply.text);
+    log(`Auto-Pong an ${reply.sender} gesendet.`);
+  } catch (error) {
+    log(`Auto-Pong an ${reply.sender} fehlgeschlagen: ${error.message}`, "error");
+  }
+}
+
+function loadAutoPongSetting() {
+  try {
+    return localStorage.getItem("meshcore-dashboard-auto-pong") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function loadHandledPings() {
+  try {
+    const values = JSON.parse(localStorage.getItem("meshcore-dashboard-auto-pong-handled") || "[]");
+    return new Set(Array.isArray(values) ? values.slice(-200) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function rememberHandledPing(fingerprint) {
+  state.autoPongHandled.add(fingerprint);
+  while (state.autoPongHandled.size > 200) {
+    state.autoPongHandled.delete(state.autoPongHandled.values().next().value);
+  }
+  try {
+    localStorage.setItem("meshcore-dashboard-auto-pong-handled", JSON.stringify([...state.autoPongHandled]));
+  } catch {
+    // In-memory deduplication still prevents repeated replies for this session.
+  }
 }
 
 function updateMessageInputPlaceholder() {
