@@ -833,7 +833,8 @@ function renderChannelTabs() {
         data-channel-index="${escapeHtml(tab.key)}"
         aria-label="${escapeHtml(tab.label)}${unread ? ", neue Nachrichten" : ""}"
       >
-        ${escapeHtml(tab.label)}
+        <span class="tab-label">${escapeHtml(tab.label)}</span>
+        ${unread ? '<span class="tab-badge" aria-label="Neue Nachrichten">Neu</span>' : ""}
       </button>
     `;
   }).join("");

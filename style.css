@@ -237,6 +237,9 @@ dd {
 
 .channel-tab {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   min-height: 32px;
   padding: 0 10px;
   border: 1px solid var(--line);
@@ -253,15 +256,24 @@ dd {
   border-color: transparent;
 }
 
-.channel-tab.unread::after {
-  content: "";
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+.tab-label {
+  display: inline-block;
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  min-height: 18px;
+  padding: 2px 6px;
+  border-radius: 999px;
   background: var(--accent-2);
+  color: #241b03;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   box-shadow: 0 0 0 2px rgba(17, 20, 20, 0.9);
 }
 
