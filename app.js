@@ -705,9 +705,8 @@ function addMessage(message) {
 }
 
 function renderContacts() {
-  const allContacts = [...state.contacts.values()].sort((a, b) => (b.lastAdvert || 0) - (a.lastAdvert || 0));
-  const contacts = allContacts.slice(0, 10);
-  el.contactCount.textContent = String(allContacts.length);
+  const contacts = [...state.contacts.values()].sort((a, b) => (b.lastAdvert || 0) - (a.lastAdvert || 0));
+  el.contactCount.textContent = String(contacts.length);
   if (!contacts.length) {
     el.contacts.className = "table empty";
     el.contacts.textContent = "Noch keine Kontakte synchronisiert.";
@@ -778,14 +777,15 @@ function renderMessages() {
   }
   el.messages.className = "messages";
   el.messages.innerHTML = state.messages.slice(0, 10).map((message) => {
+    const isDm = message.kind === "contact";
     const channelName = message.channel == null ? "" : state.channels.get(message.channel)?.name;
-    const channelLabel = `Kanal #${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
+    const channelLabel = `#${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
     const contactName = message.prefix
       ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)?.name
       : null;
-    const title = message.kind === "contact"
-      ? `Empfangen | DM ${contactName || message.prefix || ""}`
-      : `${message.kind === "out" ? "Gesendet" : "Empfangen"} | ${channelLabel}`;
+    const direction = message.kind === "out" ? "Gesendet" : "Empfangen";
+    const badge = isDm ? "DM" : channelLabel;
+    const peer = isDm ? (contactName || message.prefix || "unbekannt") : null;
     const meta = [
       formatTime(message.timestamp),
       message.snr == null ? null : `SNR ${message.snr.toFixed(1)} dB`,
@@ -800,9 +800,12 @@ function renderMessages() {
         : null,
     ].filter(Boolean).join(" | ");
     return `
-      <div class="message">
-        <strong>${escapeHtml(title)}</strong>
-        <span>${escapeHtml(message.text || "")}</span>
+      <div class="message${isDm ? " dm" : ""}">
+        <div class="message-head">
+          <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
+          <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
+        </div>
+        <span class="message-text">${escapeHtml(message.text || "")}</span>
         <span class="meta">${escapeHtml(meta)}</span>
       </div>
     `;
