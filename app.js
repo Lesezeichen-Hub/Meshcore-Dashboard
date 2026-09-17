@@ -4,7 +4,6 @@ const BAUD_RATE = 115200;
 
 const CMD = {
   APP_START: 0x01,
-  SEND_TXT_MSG: 0x02,
   SEND_CHANNEL_TXT_MSG: 0x03,
   GET_CONTACTS: 0x04,
   SET_DEVICE_TIME: 0x06,
@@ -14,6 +13,7 @@ const CMD = {
   DEVICE_QUERY: 0x16,
   GET_CHANNEL: 0x1f,
   SET_CHANNEL: 0x20,
+  SEND_TRACE_PATH: 0x24,
 };
 
 const RESP = {
@@ -40,6 +40,7 @@ const RESP = {
   LOG_DATA: 0x88,
   NEW_ADVERT: 0x8a,
   TELEMETRY: 0x8b,
+  TRACE_DATA: 0x89,
 };
 
 const TYPE_NAMES = {
@@ -50,8 +51,8 @@ const TYPE_NAMES = {
   4: "Sensor",
 };
 
-const TXT_TYPE_PLAIN = 0;
 const PING_TARGET_CHANNEL = "test";
+const TRACE_TIMEOUT_FALLBACK_MS = 15000;
 
 const state = {
   port: null,
@@ -67,7 +68,7 @@ const state = {
   waiters: [],
   pendingAcks: new Map(),
   ackResults: new Map(),
-  pendingPings: new Map(),
+  pendingTraces: new Map(),
   lastRf: null,
 };
 
@@ -445,6 +446,9 @@ function handlePacket(data) {
     case RESP.LOG_DATA:
       parseLogData(data);
       break;
+    case RESP.TRACE_DATA:
+      parseTraceData(data);
+      break;
     case RESP.NO_MORE_MESSAGES:
     case RESP.OK:
     case RESP.SENT:
@@ -467,59 +471,78 @@ async function pingContact(key) {
     return;
   }
 
-  const payload = new Uint8Array(13 + 4);
-  payload[0] = CMD.SEND_TXT_MSG;
-  payload[1] = TXT_TYPE_PLAIN;
-  payload[2] = 0; // attempt
-  writeU32(payload, 3, Math.floor(Date.now() / 1000));
-  payload.set(hexToBytes(contact.key.slice(0, 12)), 7);
-  payload.set(encodeText("ping"), 13);
+  if (contact.outPathLenRaw == null || contact.outPathLenRaw === 0xff) {
+    log(`Kein bekannter Pfad zu ${contact.name} - Trace nicht moeglich (erst Advert/Route abwarten).`, "error");
+    return;
+  }
+  const hashSize = (contact.outPathLenRaw >> 6) + 1;
+  const hashCount = contact.outPathLenRaw & 0x3f;
+  const pathSz = hashSize === 1 ? 0 : hashSize === 2 ? 1 : null;
+  if (pathSz == null || hashCount === 0) {
+    log(`Pfad-Hashgroesse von ${contact.name} wird von Trace nicht unterstuetzt.`, "error");
+    return;
+  }
+  const pathBytes = contact.outPathRaw.slice(0, hashCount * hashSize);
+
+  const tag = randomUint32();
+  const auth = randomUint32();
+  const payload = new Uint8Array(10 + pathBytes.length);
+  payload[0] = CMD.SEND_TRACE_PATH;
+  writeU32(payload, 1, tag);
+  writeU32(payload, 5, auth);
+  payload[9] = pathSz;
+  payload.set(pathBytes, 10);
 
   try {
-    const response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 8000);
-    const ackCode = response[0] === RESP.SENT ? readU32(response, 2) : null;
-    if (!ackCode) {
-      log(`Ping an ${contact.name} gesendet, aber kein ACK erwartet.`);
-      return;
-    }
+    const response = await sendAndWait(payload, [RESP.SENT], 8000);
+    const estTimeout = readU32(response, 6) || TRACE_TIMEOUT_FALLBACK_MS;
     const pending = { contact, channelIndex: targetChannel.index };
-    const earlyRoundTrip = state.ackResults.get(ackCode);
-    if (earlyRoundTrip != null) {
-      state.ackResults.delete(ackCode);
-      finalizePing(pending, earlyRoundTrip);
-    } else {
-      state.pendingPings.set(ackCode, pending);
-    }
-    log(`Ping an ${contact.name} gesendet, warte auf Antwort...`);
+    pending.timer = setTimeout(() => {
+      state.pendingTraces.delete(tag);
+      log(`Trace zu ${contact.name} hat keine Antwort erhalten (Timeout).`, "error");
+    }, estTimeout + 5000);
+    state.pendingTraces.set(tag, pending);
+    log(`Trace an ${contact.name} gesendet, warte auf Antwort...`);
   } catch (error) {
-    log(`Ping an ${contact.name} fehlgeschlagen: ${error.message}`, "error");
+    log(`Trace an ${contact.name} fehlgeschlagen: ${error.message}`, "error");
   }
 }
 
-async function finalizePing(pending, roundTrip) {
+async function finalizeTrace(pending, data) {
+  clearTimeout(pending.timer);
   const contact = state.contacts.get(pending.contact.key) || pending.contact;
-  const path = formatPathHashes(contact.outPathLenRaw, contact.outPathRaw);
-  const rf = state.lastRf && Date.now() - state.lastRf.receivedAt < 5000 ? state.lastRf : null;
-  const snrText = rf ? `${rf.snr.toFixed(2)} dB` : "-";
-  const rssiText = rf ? `${rf.rssi} dBm` : "-";
-  const text = `ack @${contact.name}: ${path.list || "-"} (${path.hops} hops) | SNR: ${snrText} | RSSI: ${rssiText} | Received at: ${new Date().toLocaleString()} | Roundtrip: ${roundTrip} ms`;
-  log(`Ping-Antwort von ${contact.name} erhalten (${roundTrip} ms).`);
+  const pathLenBytes = data[2];
+  const flags = data[3];
+  const pathSz = flags & 0x03;
+  const hopCount = pathLenBytes >> pathSz;
+  const hashesOffset = 12;
+  const hashes = data.slice(hashesOffset, hashesOffset + pathLenBytes);
+  const snrsOffset = hashesOffset + pathLenBytes;
+  const groups = [];
+  for (let i = 0; i < hopCount; i += 1) {
+    groups.push(sliceHex(hashes, i * (1 << pathSz), (i + 1) * (1 << pathSz)));
+  }
+  const hopSnrs = Array.from(data.slice(snrsOffset, snrsOffset + hopCount)).map((b) => (signedByte(b) / 4).toFixed(1));
+  const finalSnr = (signedByte(data[snrsOffset + hopCount] ?? 0) / 4).toFixed(1);
+  const text = `trace @${contact.name}: ${groups.join(",") || "-"} (${hopCount} hops) | Hop-SNR: ${hopSnrs.join(", ") || "-"} dB | Ziel-SNR: ${finalSnr} dB | Received at: ${new Date().toLocaleString()}`;
+  log(`Trace-Antwort von ${contact.name} erhalten (${hopCount} Hops).`);
   try {
     await sendChannelMessage(pending.channelIndex, text);
   } catch (error) {
-    log(`Ping-Ergebnis konnte nicht in Kanal gepostet werden: ${error.message}`, "error");
+    log(`Trace-Ergebnis konnte nicht in Kanal gepostet werden: ${error.message}`, "error");
   }
 }
 
-function formatPathHashes(pathLenRaw, rawBytes) {
-  if (pathLenRaw == null || pathLenRaw === 0xff || !rawBytes) return { list: null, hops: 0 };
-  const hashSize = (pathLenRaw >> 6) + 1;
-  const hashCount = pathLenRaw & 0x3f;
-  const groups = [];
-  for (let i = 0; i < hashCount; i += 1) {
-    groups.push(sliceHex(rawBytes, i * hashSize, i * hashSize + hashSize));
+function parseTraceData(data) {
+  if (data.length < 12) return;
+  const tag = readU32(data, 4);
+  const pending = state.pendingTraces.get(tag);
+  if (!pending) {
+    log(`Trace-Antwort fuer unbekannten Tag erhalten.`);
+    return;
   }
-  return { list: groups.join(","), hops: hashCount };
+  state.pendingTraces.delete(tag);
+  finalizeTrace(pending, data);
 }
 
 function findChannelByName(name) {
@@ -529,12 +552,8 @@ function findChannelByName(name) {
   );
 }
 
-function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i += 1) {
-    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return bytes;
+function randomUint32() {
+  return crypto.getRandomValues(new Uint32Array(1))[0];
 }
 
 function parseSelfInfo(data) {
@@ -646,12 +665,6 @@ function parseChannelMessage(data) {
 function parseAck(data) {
   const ackCode = readU32(data, 1);
   const roundTrip = readU32(data, 5);
-  const pendingPing = state.pendingPings.get(ackCode);
-  if (pendingPing) {
-    state.pendingPings.delete(ackCode);
-    finalizePing(pendingPing, roundTrip);
-    return;
-  }
   const message = state.pendingAcks.get(ackCode);
   if (!message) {
     state.ackResults.set(ackCode, roundTrip);
