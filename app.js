@@ -42,11 +42,11 @@ const RESP = {
 };
 
 const TYPE_NAMES = {
-  0: "Client",
-  1: "Repeater",
-  2: "Room",
-  3: "Sensor",
-  4: "Companion",
+  0: "Unbekannt",
+  1: "Client",
+  2: "Repeater",
+  3: "Room Server",
+  4: "Sensor",
 };
 
 const state = {
