@@ -197,7 +197,12 @@ async function fullSync() {
     await sendAndWait([CMD.GET_BATT_AND_STORAGE], [RESP.BATTERY]);
     await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
     for (let index = 0; index < state.maxChannels; index += 1) {
-      await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
+      try {
+        await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
+      } catch (error) {
+        // leere Kanalslots melden einen Fehlercode, das darf den Sync anderer Kanaele nicht abbrechen
+        log(`Kanal ${index} konnte nicht gelesen werden: ${error.message}`, "warn");
+      }
     }
     await drainMessages();
     log("Synchronisierung abgeschlossen.");
