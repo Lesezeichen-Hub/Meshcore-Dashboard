@@ -746,18 +746,21 @@ function addMessage(message) {
   state.messages.unshift(message);
   state.messages = state.messages.slice(0, 200);
 
-  if (message.kind === "contact" && state.activeChannel !== "all" && state.activeChannel !== "dm") {
-    state.unreadChannels.set("dm", true);
+  if (message.kind === "contact") {
+    if (state.activeChannel !== "dm") {
+      state.unreadChannels.set("dm", true);
+    }
   }
   if ((message.kind === "channel" || message.kind === "data") && message.channel != null) {
     const channelKey = String(message.channel);
-    if (state.activeChannel !== "all" && state.activeChannel !== channelKey) {
+    if (state.activeChannel !== channelKey) {
       state.unreadChannels.set(channelKey, true);
     }
   }
 
   persistMessages();
   renderMessages();
+  renderChannelTabs();
 }
 
 function loadStoredMessages() {
@@ -882,11 +885,9 @@ function renderChannels() {
 }
 
 function renderMessages() {
-  if (state.activeChannel === "all") {
-    state.unreadChannels.clear();
-  } else if (state.activeChannel === "dm") {
+  if (state.activeChannel === "dm") {
     state.unreadChannels.delete("dm");
-  } else {
+  } else if (state.activeChannel !== "all") {
     state.unreadChannels.delete(String(state.activeChannel));
   }
 
