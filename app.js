@@ -148,6 +148,7 @@ el.channelTabs.addEventListener("click", (event) => {
         if (contact) state.dmTarget = contact.key;
       }
     }
+    renderChannels();
   } else {
     state.unreadChannels.clear();
     state.dmTarget = null;
@@ -159,6 +160,13 @@ el.channelTabs.addEventListener("click", (event) => {
 el.channelSelect.addEventListener("change", () => {
   const next = el.channelSelect.value;
   if (next) {
+    if (next === "dm") {
+      state.activeChannel = "dm";
+      updateMessageInputPlaceholder();
+      renderMessages();
+      renderChannelTabs();
+      return;
+    }
     state.activeChannel = String(next);
     state.unreadChannels.delete(String(next));
     state.dmTarget = null;
@@ -198,6 +206,7 @@ el.contacts.addEventListener("click", (event) => {
     state.activeChannel = "dm";
     state.dmTarget = dmBtn.dataset.dm;
     updateMessageInputPlaceholder();
+    renderChannels();
     renderMessages();
     renderChannelTabs();
   }
@@ -210,6 +219,7 @@ el.messages.addEventListener("click", (event) => {
   state.activeChannel = "dm";
   state.dmTarget = contact.key;
   updateMessageInputPlaceholder();
+  renderChannels();
   renderMessages();
   renderChannelTabs();
 });
@@ -886,8 +896,7 @@ function renderContacts() {
             <td>${formatTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
             <td>
-              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button>` : "-"}
-              <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>
+              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : "-"}
             </td>
           </tr>
         `).join("")}
@@ -939,11 +948,17 @@ function renderChannels() {
     `).join("");
   }
 
-  const selected = el.channelSelect.value || state.activeChannel;
-  el.channelSelect.innerHTML = visible.map((channel) => (
+  const selected = state.activeChannel === "dm" ? "dm" : el.channelSelect.value || state.activeChannel;
+  const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
+  const dmOption = dmContact && dmContact.type === 1
+    ? `<option value="dm">DM: ${escapeHtml(dmContact.name)}</option>`
+    : "";
+  el.channelSelect.innerHTML = dmOption + visible.map((channel) => (
     `<option value="${channel.index}">#${channel.index} ${escapeHtml(channel.name || "Kanal")}</option>`
   )).join("");
-  if (selected && (selected === "all" || selected === "dm" || visible.some((channel) => String(channel.index) === String(selected)))) {
+  if (selected === "dm" && dmOption) {
+    el.channelSelect.value = "dm";
+  } else if (selected && (selected === "all" || visible.some((channel) => String(channel.index) === String(selected)))) {
     el.channelSelect.value = selected;
   } else if (visible.length) {
     el.channelSelect.value = String(visible[0].index);
@@ -1005,8 +1020,11 @@ function renderMessages() {
         ? `Timeout ${message.estimatedTimeout} ms`
         : null,
     ].filter(Boolean).join(" | ");
-    const replyButton = isDm && message.prefix
-      ? `<button type="button" class="secondary" data-reply="${escapeHtml(message.prefix)}">Antworten</button>`
+      const replyContact = message.prefix
+        ? [...state.contacts.values()].find((contact) => contact.prefix === message.prefix)
+        : null;
+      const replyButton = isDm && replyContact?.type === 1
+        ? `<button type="button" class="secondary" data-reply="${escapeHtml(message.prefix)}">Antworten</button>`
       : "";
     return `
       <div class="message${isDm ? " dm" : ""}">
