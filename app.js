@@ -135,15 +135,13 @@ el.autoPongToggle.checked = state.autoPongEnabled;
 applyChatDensity(loadChatDensity());
 
 if (!("serial" in navigator) && !("bluetooth" in navigator)) {
-  el.supportHint.textContent = "Dieser Browser unterstützt weder Web Serial noch Web Bluetooth. Nutze Chrome oder Edge.";
+  el.supportHint.textContent = "USB/Bluetooth benötigen Chrome oder Edge auf localhost beziehungsweise HTTPS.";
   el.connectBtn.disabled = true;
-  el.bleConnectBtn.disabled = true;
 } else if (!("serial" in navigator)) {
   el.supportHint.textContent = "USB wird nicht unterstützt; Bluetooth ist verfügbar.";
   el.connectBtn.disabled = true;
 } else if (!("bluetooth" in navigator)) {
-  el.supportHint.textContent = "Bluetooth wird nicht unterstützt; USB ist verfügbar.";
-  el.bleConnectBtn.disabled = true;
+  el.supportHint.textContent = "Bluetooth ist in diesem Seitenkontext nicht verfügbar; USB ist verfügbar.";
 }
 
 el.connectBtn.addEventListener("click", connectUsb);
@@ -331,6 +329,16 @@ async function connectUsb() {
 }
 
 async function connectBluetooth() {
+  if (!("bluetooth" in navigator)) {
+    const reason = !window.isSecureContext
+      ? "Web Bluetooth benötigt localhost, 127.0.0.1 oder HTTPS."
+      : window.top !== window.self
+        ? "Web Bluetooth ist in dieser Einbettung nicht freigegeben. Öffne das Modul direkt oder erlaube Bluetooth im iframe."
+        : "Dieser Browser stellt Web Bluetooth nicht bereit. Nutze Chrome oder Edge.";
+    showActionNotice(reason, "error");
+    log(reason, "error");
+    return;
+  }
   try {
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [BLE_SERVICE_UUID] }],
@@ -1413,7 +1421,7 @@ function updateConnectionUi() {
   const transportLabel = state.transport === "bluetooth" ? "Bluetooth" : state.transport === "usb" ? "USB" : null;
   el.connectionState.textContent = state.connected ? `Verbunden (${transportLabel})` : "Nicht verbunden";
   el.connectBtn.disabled = state.connected || !("serial" in navigator);
-  el.bleConnectBtn.disabled = state.connected || !("bluetooth" in navigator);
+  el.bleConnectBtn.disabled = state.connected;
   el.syncBtn.disabled = !state.connected;
   el.advertBtn.disabled = !state.connected;
   el.disconnectBtn.disabled = !state.connected;

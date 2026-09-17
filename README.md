@@ -1,6 +1,8 @@
 # MeshCore Dashboard
 
-Kleines lokales Dashboard fuer einen MeshCore USB-Companion. Es laeuft direkt im Browser ueber die Web-Serial-API und spricht das MeshCore Companion USB framing:
+Kleines lokales Dashboard fuer einen MeshCore Companion. Es verbindet sich im Browser ueber Web Serial oder Web Bluetooth.
+
+USB spricht das MeshCore Companion Framing:
 
 - App -> Radio: `<` + 16-bit Laenge little endian + Payload
 - Radio -> App: `>` + 16-bit Laenge little endian + Payload
@@ -15,7 +17,9 @@ Kleines lokales Dashboard fuer einen MeshCore USB-Companion. Es laeuft direkt im
    ```
 
 3. `http://localhost:8000` in Chrome oder Edge oeffnen.
-4. `Verbinden` anklicken und den seriellen MeshCore-Port auswaehlen.
+4. `USB verbinden` oder `Bluetooth` anklicken und das MeshCore-Geraet auswaehlen.
+
+Web Bluetooth funktioniert nur in Chrome oder Edge in einem sicheren Seitenkontext, also ueber `localhost`, `127.0.0.1` oder HTTPS. Bei einer Einbettung muss der uebergeordnete iframe Bluetooth mit `allow="bluetooth"` freigeben.
 
 ## Lesezeichen-Hub
 
@@ -38,4 +42,4 @@ gemeinsam aktualisiert.
 - Kanalnachrichten senden
 - eigenes Advertisement per Button senden
 
-Hinweis: Web Serial ist in Firefox/Safari nicht verfuegbar. Falls keine Daten kommen, pruefe, ob dein Device mit der `companion_radio_usb` Firmware laeuft und nicht im BLE- oder KISS-Modus ist.
+Hinweis: Web Serial und Web Bluetooth sind in Firefox/Safari nicht verfuegbar. Nutze fuer USB die `companion_radio_usb`- und fuer Bluetooth die Companion-BLE-Firmware, jeweils nicht im KISS-Modus.
