@@ -61,6 +61,8 @@ const state = {
   maxChannels: 8,
   frameBuffer: [],
   contacts: new Map(),
+  contactOrder: new Map(),
+  contactSequence: 0,
   channels: new Map(),
   messages: loadStoredMessages(),
   latestContactsSince: 0,
@@ -644,6 +646,7 @@ function parseContact(data) {
     lastmod: normalizeFutureTimestamp(readU32(data, 144)),
   };
   state.contacts.set(key, contact);
+  state.contactOrder.set(key, ++state.contactSequence);
   renderContacts();
 }
 
@@ -777,7 +780,11 @@ function persistMessages() {
 }
 
 function renderContacts() {
-  const contacts = [...state.contacts.values()].sort((a, b) => (b.lastAdvert || 0) - (a.lastAdvert || 0));
+  const contacts = [...state.contacts.values()].sort((a, b) => {
+    const orderA = state.contactOrder.get(a.key) || 0;
+    const orderB = state.contactOrder.get(b.key) || 0;
+    return orderB - orderA;
+  });
   const query = state.contactSearch;
   const visible = query
     ? contacts.filter((contact) => {
