@@ -207,6 +207,11 @@ dd {
   padding: 12px;
 }
 
+.messages {
+  overflow-y: auto;
+  max-height: 360px;
+}
+
 .empty {
   color: var(--muted);
 }
@@ -231,6 +236,8 @@ dd {
 
 .table {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 360px;
 }
 
 .contact-table td {

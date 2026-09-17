@@ -592,8 +592,9 @@ function addMessage(message) {
 }
 
 function renderContacts() {
-  const contacts = [...state.contacts.values()].sort((a, b) => (b.lastAdvert || 0) - (a.lastAdvert || 0));
-  el.contactCount.textContent = String(contacts.length);
+  const allContacts = [...state.contacts.values()].sort((a, b) => (b.lastAdvert || 0) - (a.lastAdvert || 0));
+  const contacts = allContacts.slice(0, 10);
+  el.contactCount.textContent = String(allContacts.length);
   if (!contacts.length) {
     el.contacts.className = "table empty";
     el.contacts.textContent = "Noch keine Kontakte synchronisiert.";
@@ -662,7 +663,7 @@ function renderMessages() {
     return;
   }
   el.messages.className = "messages";
-  el.messages.innerHTML = state.messages.map((message) => {
+  el.messages.innerHTML = state.messages.slice(0, 10).map((message) => {
     const channelName = message.channel == null ? "" : state.channels.get(message.channel)?.name;
     const channelLabel = `Kanal #${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
     const title = message.kind === "contact"
@@ -796,7 +797,7 @@ function formatMessageRoute(pathLen) {
 }
 
 function formatContactRoute(pathLen) {
-  if (pathLen == null || pathLen < 0) return "Flood / kein direkter Pfad";
+  if (pathLen == null || pathLen < 0) return "Flood";
   const hops = pathLen & 0x3f;
   return hops === 0 ? "Direkt (0 Hops)" : `Direkter Pfad, ${hops} ${hops === 1 ? "Hop" : "Hops"}`;
 }
