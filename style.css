@@ -300,6 +300,7 @@ dd {
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 16px;
   margin-top: 16px;
 }
@@ -322,6 +323,47 @@ dd {
   gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--line);
+}
+
+.panel-head > h2 {
+  margin-right: auto;
+}
+
+.panel.collapsed > :not(.panel-head) {
+  display: none;
+}
+
+.panel.collapsed .message-controls,
+.panel.collapsed #clearLogBtn {
+  display: none;
+}
+
+.panel.collapsed .panel-head {
+  border-bottom: 0;
+}
+
+.panel-toggle {
+  display: inline-grid;
+  flex: 0 0 30px;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  margin-left: 2px;
+  padding: 0;
+  place-items: center;
+}
+
+.panel-toggle span {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.panel.collapsed .panel-toggle span {
+  transform: translateY(2px) rotate(225deg);
 }
 
 .chip {
@@ -761,6 +803,11 @@ html[data-chat-density="compact"] .message-head button {
   .panel-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .panel.collapsed .panel-head {
+    align-items: center;
+    flex-direction: row;
   }
 
   .status-band,

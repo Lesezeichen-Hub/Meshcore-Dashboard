@@ -146,6 +146,7 @@ const el = {
 applyTheme(loadTheme());
 el.autoPongToggle.checked = state.autoPongEnabled;
 applyChatDensity(loadChatDensity());
+initializeCollapsiblePanels();
 
 if (!("serial" in navigator) && !("bluetooth" in navigator)) {
   el.supportHint.textContent = "USB/Bluetooth benötigen Chrome oder Edge auf localhost beziehungsweise HTTPS.";
@@ -1402,6 +1403,51 @@ function applyChatDensity(density) {
   const compact = density === "compact";
   document.documentElement.dataset.chatDensity = compact ? "compact" : "comfortable";
   el.compactChatToggle.checked = compact;
+}
+
+function initializeCollapsiblePanels() {
+  const collapsedPanels = loadCollapsedPanels();
+  document.querySelectorAll(".panel[data-panel-id]").forEach((panel) => {
+    const heading = panel.querySelector(".panel-head h2");
+    const panelId = panel.dataset.panelId;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "panel-toggle secondary";
+    button.innerHTML = '<span aria-hidden="true"></span>';
+    button.addEventListener("click", () => {
+      setPanelCollapsed(panel, !panel.classList.contains("collapsed"));
+      persistCollapsedPanels();
+    });
+    panel.querySelector(".panel-head").append(button);
+    setPanelCollapsed(panel, collapsedPanels.has(panelId), heading?.textContent || "Bereich");
+  });
+}
+
+function setPanelCollapsed(panel, collapsed, panelName = panel.querySelector(".panel-head h2")?.textContent || "Bereich") {
+  panel.classList.toggle("collapsed", collapsed);
+  const button = panel.querySelector(".panel-toggle");
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", `${panelName} ${collapsed ? "ausklappen" : "einklappen"}`);
+  button.title = `${panelName} ${collapsed ? "ausklappen" : "einklappen"}`;
+}
+
+function loadCollapsedPanels() {
+  try {
+    const panelIds = JSON.parse(localStorage.getItem("meshcore-dashboard-collapsed-panels") || "[]");
+    return new Set(Array.isArray(panelIds) ? panelIds : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistCollapsedPanels() {
+  const panelIds = [...document.querySelectorAll(".panel[data-panel-id].collapsed")]
+    .map((panel) => panel.dataset.panelId);
+  try {
+    localStorage.setItem("meshcore-dashboard-collapsed-panels", JSON.stringify(panelIds));
+  } catch {
+    // The collapsed state still applies for this session.
+  }
 }
 
 function getPingReply(message) {
