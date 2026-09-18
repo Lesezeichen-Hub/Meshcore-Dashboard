@@ -119,6 +119,8 @@ const el = {
   channelTypeSelect: document.querySelector("#channelTypeSelect"),
   createChannelBtn: document.querySelector("#createChannelBtn"),
   messageInput: document.querySelector("#messageInput"),
+  emojiPickerBtn: document.querySelector("#emojiPickerBtn"),
+  emojiPickerMenu: document.querySelector("#emojiPickerMenu"),
   sendBtn: document.querySelector("#sendBtn"),
   sendForm: document.querySelector("#sendForm"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -208,6 +210,23 @@ el.compactChatToggle.addEventListener("change", () => {
   } catch {
     // The selected density still applies for this session.
   }
+});
+el.emojiPickerBtn.addEventListener("click", () => {
+  const open = el.emojiPickerMenu.hidden;
+  el.emojiPickerMenu.hidden = !open;
+  el.emojiPickerBtn.setAttribute("aria-expanded", String(open));
+});
+el.emojiPickerMenu.addEventListener("click", (event) => {
+  const emojiButton = event.target.closest("button[data-emoji]");
+  if (!emojiButton) return;
+  insertEmoji(emojiButton.dataset.emoji);
+  closeEmojiPicker();
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".emoji-picker")) closeEmojiPicker();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeEmojiPicker();
 });
 el.disconnectBtn.addEventListener("click", disconnect);
 el.syncBtn.addEventListener("click", () => {
@@ -1205,6 +1224,7 @@ function renderChannels() {
   const canSend = state.connected && visible.length > 0;
   el.channelSelect.disabled = !canSend;
   el.messageInput.disabled = !canSend;
+  el.emojiPickerBtn.disabled = !canSend;
   el.sendBtn.disabled = !canSend;
 }
 
@@ -1471,6 +1491,25 @@ function updateMessageInputPlaceholder() {
     return;
   }
   el.messageInput.placeholder = "Nachricht an Kanal";
+}
+
+function insertEmoji(emoji) {
+  const start = el.messageInput.selectionStart ?? el.messageInput.value.length;
+  const end = el.messageInput.selectionEnd ?? start;
+  const nextValue = el.messageInput.value.slice(0, start) + emoji + el.messageInput.value.slice(end);
+  if (nextValue.length > el.messageInput.maxLength) {
+    showActionNotice("Die maximale Nachrichtenlänge ist erreicht.", "warn");
+    return;
+  }
+  el.messageInput.value = nextValue;
+  const cursor = start + emoji.length;
+  el.messageInput.focus();
+  el.messageInput.setSelectionRange(cursor, cursor);
+}
+
+function closeEmojiPicker() {
+  el.emojiPickerMenu.hidden = true;
+  el.emojiPickerBtn.setAttribute("aria-expanded", "false");
 }
 
 function updateConnectionUi() {

@@ -108,6 +108,23 @@
               <form id="sendForm" class="send-form">
                 <select id="channelSelect" aria-label="Kanal" disabled></select>
                 <input id="messageInput" type="text" maxlength="150" placeholder="Nachricht an Kanal" disabled>
+                <div class="emoji-picker">
+                  <button id="emojiPickerBtn" type="button" class="secondary emoji-picker-button" aria-label="Emoji auswählen" title="Emoji auswählen" aria-expanded="false" disabled>&#9786;</button>
+                  <div id="emojiPickerMenu" class="emoji-picker-menu" aria-label="Emojis" hidden>
+                    <button type="button" data-emoji="😀" aria-label="Grinsendes Gesicht">😀</button>
+                    <button type="button" data-emoji="😂" aria-label="Freudentränen">😂</button>
+                    <button type="button" data-emoji="😊" aria-label="Lächelndes Gesicht">😊</button>
+                    <button type="button" data-emoji="👍" aria-label="Daumen hoch">👍</button>
+                    <button type="button" data-emoji="❤️" aria-label="Herz">❤️</button>
+                    <button type="button" data-emoji="🎉" aria-label="Konfetti">🎉</button>
+                    <button type="button" data-emoji="📡" aria-label="Antenne">📡</button>
+                    <button type="button" data-emoji="📍" aria-label="Markierung">📍</button>
+                    <button type="button" data-emoji="⚡" aria-label="Blitz">⚡</button>
+                    <button type="button" data-emoji="✅" aria-label="Erledigt">✅</button>
+                    <button type="button" data-emoji="❌" aria-label="Kreuz">❌</button>
+                    <button type="button" data-emoji="👋" aria-label="Winken">👋</button>
+                  </div>
+                </div>
                 <button id="sendBtn" type="submit" disabled>Senden</button>
               </form>
             </div>
