@@ -55,6 +55,10 @@ const TYPE_NAMES = {
 
 const TXT_TYPE_PLAIN = 0;
 const PING_TARGET_CHANNEL = "ping";
+const PING_ACK_TIMEOUT_DEFAULT_MS = 60000;
+const PING_ACK_TIMEOUT_MIN_MS = 30000;
+const PING_ACK_TIMEOUT_MAX_MS = 120000;
+const PING_ACK_TIMEOUT_BUFFER_MS = 10000;
 const AUTO_PONG_COOLDOWN_MS = 15000;
 
 const state = {
@@ -83,6 +87,7 @@ const state = {
   unreadChannels: new Map(),
   ackResults: new Map(),
   pendingPings: new Map(),
+  expiredPingAcks: new Set(),
   lastRf: null,
   autoPongEnabled: loadAutoPongSetting() && isValidPostalCode(loadAutoPongPostalCode()),
   autoPongPostalCode: loadAutoPongPostalCode(),
@@ -438,6 +443,7 @@ function handleBluetoothDisconnected() {
   state.connected = false;
   state.transport = null;
   rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
+  clearPendingPings();
   state.bluetoothTx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
   state.bluetoothDevice?.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
   state.bluetoothDevice = null;
@@ -453,6 +459,7 @@ async function disconnect() {
   state.connected = false;
   state.transport = null;
   rejectPendingWaiters(new Error("Verbindung getrennt."));
+  clearPendingPings();
   try {
     if (state.reader) {
       await state.reader.cancel();
@@ -851,18 +858,51 @@ async function pingContact(key) {
       log(`Ping an ${contact.name} gesendet, aber kein ACK erwartet.`);
       return;
     }
-    const pending = { contact, channelIndex: targetChannel.index, sentAt: Date.now() };
+    const timeoutMs = getPingAckTimeout(response);
+    const pending = { contact, channelIndex: targetChannel.index, sentAt: Date.now(), timer: null };
     const earlyRoundTrip = state.ackResults.get(ackCode);
     if (earlyRoundTrip != null) {
       state.ackResults.delete(ackCode);
       finalizePing(pending, earlyRoundTrip);
     } else {
-      state.pendingPings.set(ackCode, pending);
+      registerPendingPing(ackCode, pending, timeoutMs);
+      log(`Ping an ${contact.name} gesendet, warte bis zu ${Math.ceil(timeoutMs / 1000)} Sekunden auf Antwort...`);
     }
-    log(`Ping an ${contact.name} gesendet, warte auf Antwort...`);
   } catch (error) {
     log(`Ping an ${contact.name} fehlgeschlagen: ${error.message}`, "error");
   }
+}
+
+function getPingAckTimeout(response) {
+  const estimatedTimeout = response[0] === RESP.SENT ? readU32(response, 6) : null;
+  if (!estimatedTimeout) return PING_ACK_TIMEOUT_DEFAULT_MS;
+  return Math.min(PING_ACK_TIMEOUT_MAX_MS, Math.max(PING_ACK_TIMEOUT_MIN_MS, estimatedTimeout + PING_ACK_TIMEOUT_BUFFER_MS));
+}
+
+function registerPendingPing(ackCode, pending, timeoutMs) {
+  state.expiredPingAcks.delete(ackCode);
+  pending.timer = setTimeout(() => {
+    if (state.pendingPings.get(ackCode) !== pending) return;
+    state.pendingPings.delete(ackCode);
+    rememberExpiredPingAck(ackCode);
+    log(`Keine Ping-Antwort von ${pending.contact.name} innerhalb von ${Math.ceil(timeoutMs / 1000)} Sekunden.`, "warn");
+  }, timeoutMs);
+  state.pendingPings.set(ackCode, pending);
+}
+
+function rememberExpiredPingAck(ackCode) {
+  state.expiredPingAcks.add(ackCode);
+  while (state.expiredPingAcks.size > 200) {
+    state.expiredPingAcks.delete(state.expiredPingAcks.values().next().value);
+  }
+}
+
+function clearPendingPings() {
+  for (const [ackCode, pending] of state.pendingPings) {
+    clearTimeout(pending.timer);
+    rememberExpiredPingAck(ackCode);
+  }
+  state.pendingPings.clear();
 }
 
 async function finalizePing(pending, roundTrip) {
@@ -1034,18 +1074,20 @@ function parseAck(data) {
   const roundTrip = readU32(data, 5);
   const pendingPing = state.pendingPings.get(ackCode);
   if (pendingPing) {
+    clearTimeout(pendingPing.timer);
     state.pendingPings.delete(ackCode);
     finalizePing(pendingPing, roundTrip);
     return;
   }
   const message = state.pendingAcks.get(ackCode);
-  if (!message) {
-    state.ackResults.set(ackCode, roundTrip);
+  if (message) {
+    applyAck(message, roundTrip);
+    state.pendingAcks.delete(ackCode);
+    renderMessages();
     return;
   }
-  applyAck(message, roundTrip);
-  state.pendingAcks.delete(ackCode);
-  renderMessages();
+  if (state.expiredPingAcks.delete(ackCode)) return;
+  state.ackResults.set(ackCode, roundTrip);
 }
 
 function parseLogData(data) {
