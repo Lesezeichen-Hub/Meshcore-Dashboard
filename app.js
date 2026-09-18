@@ -84,7 +84,8 @@ const state = {
   ackResults: new Map(),
   pendingPings: new Map(),
   lastRf: null,
-  autoPongEnabled: loadAutoPongSetting(),
+  autoPongEnabled: loadAutoPongSetting() && isValidPostalCode(loadAutoPongPostalCode()),
+  autoPongPostalCode: loadAutoPongPostalCode(),
   autoPongHandled: loadHandledPings(),
   autoPongCooldowns: new Map(),
   autoPongQueue: [],
@@ -127,6 +128,11 @@ const el = {
   actionNotice: document.querySelector("#actionNotice"),
   themeToggle: document.querySelector("#themeToggle"),
   autoPongToggle: document.querySelector("#autoPongToggle"),
+  autoPongSettingsBtn: document.querySelector("#autoPongSettingsBtn"),
+  autoPongSettingsDialog: document.querySelector("#autoPongSettingsDialog"),
+  autoPongSettingsForm: document.querySelector("#autoPongSettingsForm"),
+  autoPongPostalCodeInput: document.querySelector("#autoPongPostalCodeInput"),
+  closeAutoPongSettingsBtn: document.querySelector("#closeAutoPongSettingsBtn"),
   compactChatToggle: document.querySelector("#compactChatToggle"),
 };
 
@@ -156,6 +162,12 @@ el.themeToggle.addEventListener("click", () => {
   }
 });
 el.autoPongToggle.addEventListener("change", () => {
+  if (el.autoPongToggle.checked && !isValidPostalCode(state.autoPongPostalCode)) {
+    el.autoPongToggle.checked = false;
+    openAutoPongSettings();
+    showActionNotice("Bitte zuerst eine fünfstellige PLZ festlegen.", "warn");
+    return;
+  }
   state.autoPongEnabled = el.autoPongToggle.checked;
   try {
     localStorage.setItem("meshcore-dashboard-auto-pong", String(state.autoPongEnabled));
@@ -163,6 +175,30 @@ el.autoPongToggle.addEventListener("change", () => {
     // The setting still applies for this session.
   }
   showActionNotice(`Auto-Pong ${state.autoPongEnabled ? "aktiviert" : "deaktiviert"}.`);
+});
+el.autoPongSettingsBtn.addEventListener("click", openAutoPongSettings);
+el.closeAutoPongSettingsBtn.addEventListener("click", () => el.autoPongSettingsDialog.close());
+el.autoPongSettingsForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const postalCode = el.autoPongPostalCodeInput.value.trim();
+  if (!isValidPostalCode(postalCode)) {
+    el.autoPongPostalCodeInput.setCustomValidity("Bitte eine fünfstellige PLZ eingeben.");
+    el.autoPongPostalCodeInput.reportValidity();
+    return;
+  }
+  el.autoPongPostalCodeInput.setCustomValidity("");
+  state.autoPongPostalCode = postalCode;
+  try {
+    localStorage.setItem("meshcore-dashboard-auto-pong-postal-code", postalCode);
+  } catch {
+    // The postal code still applies for this session.
+  }
+  el.autoPongSettingsDialog.close();
+  showActionNotice(`Auto-Pong-PLZ ${postalCode} gespeichert.`);
+  renderMessages();
+});
+el.autoPongPostalCodeInput.addEventListener("input", () => {
+  el.autoPongPostalCodeInput.setCustomValidity("");
 });
 el.compactChatToggle.addEventListener("change", () => {
   const density = el.compactChatToggle.checked ? "compact" : "comfortable";
@@ -1316,10 +1352,10 @@ function getPingReply(message) {
   if (separator < 1) return null;
   const sender = text.slice(0, separator).trim();
   const body = text.slice(separator + 1).trimStart();
-  if (!sender || !body.toLowerCase().startsWith("ping")) return null;
+  if (!sender || !body.toLowerCase().startsWith("ping") || !isValidPostalCode(state.autoPongPostalCode)) return null;
 
   const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
-  return { text: `@[${sender}] Pong - ${hops} Hops`, sender, hops };
+  return { text: `@[${sender}] Pong - ${hops} Hops in ${state.autoPongPostalCode}`, sender, hops };
 }
 
 function getChannelReply(message) {
@@ -1380,6 +1416,26 @@ function loadAutoPongSetting() {
   } catch {
     return false;
   }
+}
+
+function loadAutoPongPostalCode() {
+  try {
+    const postalCode = localStorage.getItem("meshcore-dashboard-auto-pong-postal-code") || "";
+    return isValidPostalCode(postalCode) ? postalCode : "";
+  } catch {
+    return "";
+  }
+}
+
+function isValidPostalCode(postalCode) {
+  return /^\d{5}$/.test(postalCode);
+}
+
+function openAutoPongSettings() {
+  el.autoPongPostalCodeInput.value = state.autoPongPostalCode;
+  el.autoPongPostalCodeInput.setCustomValidity("");
+  el.autoPongSettingsDialog.showModal();
+  el.autoPongPostalCodeInput.focus();
 }
 
 function loadHandledPings() {
