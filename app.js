@@ -1293,7 +1293,7 @@ function renderMessages() {
       ? `<button type="button" class="secondary channel-reply-button" data-channel-reply-index="${state.messages.indexOf(message)}" title="${escapeHtml(channelReply.sender)} antworten" aria-label="${escapeHtml(channelReply.sender)} antworten">Antworten</button>`
       : "";
     return `
-      <div class="message${isDm ? " dm" : ""}">
+      <div class="message${isDm ? " dm" : ""}${isOutgoing ? " outgoing" : ""}">
         <div class="message-head">
           <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
