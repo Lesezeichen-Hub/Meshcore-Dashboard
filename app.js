@@ -55,6 +55,7 @@ const TYPE_NAMES = {
 
 const TXT_TYPE_PLAIN = 0;
 const PING_TARGET_CHANNEL = "ping";
+const QUICK_REPLY_TARGET_CHANNELS = new Set(["public", "test"]);
 const PING_ACK_TIMEOUT_DEFAULT_MS = 60000;
 const PING_ACK_TIMEOUT_MIN_MS = 30000;
 const PING_ACK_TIMEOUT_MAX_MS = 120000;
@@ -353,6 +354,18 @@ el.messages.addEventListener("click", (event) => {
     sendChannelMessage(message.channel, reply.text).catch((error) => {
       pongBtn.disabled = false;
       log(`Pong konnte nicht gesendet werden: ${error.message}`, "error");
+    });
+    return;
+  }
+  const quickReplyBtn = event.target.closest("button[data-quick-reply-index]");
+  if (quickReplyBtn) {
+    const message = state.messages[Number(quickReplyBtn.dataset.quickReplyIndex)];
+    const reply = message ? getQuickChannelReply(message) : null;
+    if (!reply || !state.connected) return;
+    quickReplyBtn.disabled = true;
+    sendChannelMessage(message.channel, reply.text).catch((error) => {
+      quickReplyBtn.disabled = false;
+      log(`Schnellantwort konnte nicht gesendet werden: ${error.message}`, "error");
     });
     return;
   }
@@ -1331,6 +1344,10 @@ function renderMessages() {
     const pongButton = pingReply
       ? `<button type="button" class="secondary" data-pong-index="${state.messages.indexOf(message)}"${state.connected ? "" : " disabled"}>Pong</button>`
       : "";
+    const quickReply = getQuickChannelReply(message);
+    const quickReplyButton = quickReply
+      ? `<button type="button" class="secondary quick-reply-button" data-quick-reply-index="${state.messages.indexOf(message)}"${state.connected ? "" : " disabled"} title="${escapeHtml(quickReply.sender)} mit Hop-Info antworten" aria-label="${escapeHtml(quickReply.sender)} mit Hop-Info antworten">Hop</button>`
+      : "";
     const channelReply = getChannelReply(message);
     const channelReplyButton = channelReply
       ? `<button type="button" class="secondary channel-reply-button" data-channel-reply-index="${state.messages.indexOf(message)}" title="${escapeHtml(channelReply.sender)} antworten" aria-label="${escapeHtml(channelReply.sender)} antworten">Antworten</button>`
@@ -1341,6 +1358,7 @@ function renderMessages() {
           <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
           ${pongButton}
+          ${quickReplyButton}
           ${channelReplyButton}
           ${replyButton}
         </div>
@@ -1453,7 +1471,7 @@ function persistCollapsedPanels() {
 function getPingReply(message) {
   if (message.kind !== "channel" || message.channel == null) return null;
   const channelName = state.channels.get(message.channel)?.name || "";
-  if (channelName.replace(/^#/, "").toLowerCase() !== PING_TARGET_CHANNEL) return null;
+  if (normalizeChannelName(channelName) !== PING_TARGET_CHANNEL) return null;
 
   const text = String(message.text || "");
   const separator = text.indexOf(":");
@@ -1464,6 +1482,29 @@ function getPingReply(message) {
 
   const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
   return { text: `@[${sender}] Pong - ${hops} Hops in ${state.autoPongPostalCode}`, sender, hops };
+}
+
+function getQuickChannelReply(message) {
+  if (message.kind !== "channel" || message.channel == null || message.outgoing === true) return null;
+  if (!isQuickReplyChannel(message.channel) || !isValidPostalCode(state.autoPongPostalCode)) return null;
+
+  const text = String(message.text || "");
+  const separator = text.indexOf(":");
+  if (separator < 1) return null;
+  const sender = text.slice(0, separator).trim();
+  if (!sender) return null;
+
+  const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
+  return { text: `@[${sender}] ${hops} Hops in ${state.autoPongPostalCode}`, sender, hops };
+}
+
+function isQuickReplyChannel(channelIndex) {
+  const channelName = state.channels.get(channelIndex)?.name || (channelIndex === 0 ? "Public" : "");
+  return QUICK_REPLY_TARGET_CHANNELS.has(normalizeChannelName(channelName));
+}
+
+function normalizeChannelName(channelName) {
+  return String(channelName || "").replace(/^#/, "").trim().toLowerCase();
 }
 
 function getChannelReply(message) {
