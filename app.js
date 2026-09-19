@@ -55,7 +55,8 @@ const TYPE_NAMES = {
 
 const TXT_TYPE_PLAIN = 0;
 const PING_TARGET_CHANNEL = "ping";
-const QUICK_REPLY_TARGET_CHANNELS = new Set(["public", "test"]);
+const DEFAULT_QUICK_REPLY_TEMPLATE = "@[{name}] {hops} Hops in {plz} | SNR {snr} | RSSI {rssi}";
+const QUICK_REPLY_DEFAULT_CHANNELS = new Set(["public", "test"]);
 const PING_ACK_TIMEOUT_DEFAULT_MS = 60000;
 const PING_ACK_TIMEOUT_MIN_MS = 30000;
 const PING_ACK_TIMEOUT_MAX_MS = 120000;
@@ -82,6 +83,7 @@ const state = {
   latestContactsSince: 0,
   waiters: [],
   pendingAcks: new Map(),
+  ackTimers: new Map(),
   activeChannel: "all",
   contactSearch: "",
   dmTarget: null,
@@ -90,6 +92,10 @@ const state = {
   pendingPings: new Map(),
   expiredPingAcks: new Set(),
   lastRf: null,
+  selfName: "",
+  quickReplyRules: loadQuickReplyRules(),
+  quickReplyHandled: loadHandledQuickReplies(),
+  quickReplyCooldowns: new Map(),
   autoPongEnabled: loadAutoPongSetting() && isValidPostalCode(loadAutoPongPostalCode()),
   autoPongPostalCode: loadAutoPongPostalCode(),
   autoPongHandled: loadHandledPings(),
@@ -140,6 +146,7 @@ const el = {
   autoPongSettingsDialog: document.querySelector("#autoPongSettingsDialog"),
   autoPongSettingsForm: document.querySelector("#autoPongSettingsForm"),
   autoPongPostalCodeInput: document.querySelector("#autoPongPostalCodeInput"),
+  quickReplyRules: document.querySelector("#quickReplyRules"),
   closeAutoPongSettingsBtn: document.querySelector("#closeAutoPongSettingsBtn"),
   compactChatToggle: document.querySelector("#compactChatToggle"),
 };
@@ -197,13 +204,15 @@ el.autoPongSettingsForm.addEventListener("submit", (event) => {
   }
   el.autoPongPostalCodeInput.setCustomValidity("");
   state.autoPongPostalCode = postalCode;
+  state.quickReplyRules = readQuickReplyRules();
   try {
     localStorage.setItem("meshcore-dashboard-auto-pong-postal-code", postalCode);
+    localStorage.setItem("meshcore-dashboard-quick-reply-rules", JSON.stringify(state.quickReplyRules));
   } catch {
     // The postal code still applies for this session.
   }
   el.autoPongSettingsDialog.close();
-  showActionNotice(`Auto-Pong-PLZ ${postalCode} gespeichert.`);
+  showActionNotice("Antwortregeln gespeichert.");
   renderMessages();
 });
 el.autoPongPostalCodeInput.addEventListener("input", () => {
@@ -361,12 +370,26 @@ el.messages.addEventListener("click", (event) => {
   if (quickReplyBtn) {
     const message = state.messages[Number(quickReplyBtn.dataset.quickReplyIndex)];
     const reply = message ? getQuickChannelReply(message) : null;
-    if (!reply || !state.connected) return;
+    if (!reply) return;
+    if (!isValidPostalCode(state.autoPongPostalCode)) {
+      openAutoPongSettings();
+      showActionNotice("Bitte zuerst eine fünfstellige PLZ festlegen.", "warn");
+      return;
+    }
+    if (!state.connected) return;
     quickReplyBtn.disabled = true;
     sendChannelMessage(message.channel, reply.text).catch((error) => {
       quickReplyBtn.disabled = false;
       log(`Schnellantwort konnte nicht gesendet werden: ${error.message}`, "error");
     });
+    return;
+  }
+  const retryBtn = event.target.closest("button[data-retry-index]");
+  if (retryBtn) {
+    const message = state.messages[Number(retryBtn.dataset.retryIndex)];
+    if (!message || !state.connected) return;
+    retryBtn.disabled = true;
+    retryMessage(message).catch((error) => log(`Wiederholen fehlgeschlagen: ${error.message}`, "error"));
     return;
   }
   const replyBtn = event.target.closest("button[data-reply]");
@@ -458,6 +481,7 @@ function handleBluetoothDisconnected() {
   state.transport = null;
   rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
   clearPendingPings();
+  failPendingMessages("Bluetooth-Verbindung getrennt.");
   state.bluetoothTx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
   state.bluetoothDevice?.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
   state.bluetoothDevice = null;
@@ -474,6 +498,7 @@ async function disconnect() {
   state.transport = null;
   rejectPendingWaiters(new Error("Verbindung getrennt."));
   clearPendingPings();
+  failPendingMessages("Verbindung getrennt.");
   try {
     if (state.reader) {
       await state.reader.cancel();
@@ -577,7 +602,18 @@ function buildDeviceTime() {
   return payload;
 }
 
-async function sendChannelMessage(channelIndex, text) {
+async function sendChannelMessage(channelIndex, text, existingMessage = null) {
+  if (!state.connected) throw new Error("Nicht verbunden.");
+  const message = existingMessage || {
+    kind: "out",
+    channel: channelIndex,
+    timestamp: Math.floor(Date.now() / 1000),
+    text,
+  };
+  prepareMessageForSend(message);
+  if (!existingMessage) addMessage(message);
+  else updateStoredMessage(message);
+
   const body = encodeText(text);
   const payload = new Uint8Array(7 + body.length);
   payload[0] = CMD.SEND_CHANNEL_TXT_MSG;
@@ -585,30 +621,33 @@ async function sendChannelMessage(channelIndex, text) {
   payload[2] = channelIndex;
   writeU32(payload, 3, Math.floor(Date.now() / 1000));
   payload.set(body, 7);
-  const response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 5000);
+  let response;
+  try {
+    response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 5000);
+  } catch (error) {
+    markMessageFailed(message, error.message);
+    throw error;
+  }
   const detailedResponse = response[0] === RESP.SENT;
   const ackCode = detailedResponse ? readU32(response, 2) : null;
-  const message = {
-    kind: "out",
-    channel: channelIndex,
-    timestamp: Math.floor(Date.now() / 1000),
-    text,
-    sendResult: detailedResponse ? signedByte(response[1] ?? 0) : 0,
-    ackCode,
-    estimatedTimeout: detailedResponse ? readU32(response, 6) : null,
-    delivery: ackCode ? "Bestätigung ausstehend" : "An Funk übergeben",
-  };
-  addMessage(message);
+  message.sendResult = detailedResponse ? signedByte(response[1] ?? 0) : 0;
+  message.ackCode = ackCode;
+  message.estimatedTimeout = detailedResponse ? readU32(response, 6) : null;
+  message.deliveryStatus = ackCode ? "sent" : "confirmed";
+  message.delivery = ackCode ? "Gesendet" : "Bestätigt";
+  updateStoredMessage(message);
   if (ackCode) {
     const earlyRoundTrip = state.ackResults.get(ackCode);
     if (earlyRoundTrip == null) {
       state.pendingAcks.set(ackCode, message);
+      scheduleAckTimeout(ackCode, message);
     } else {
       applyAck(message, earlyRoundTrip);
       state.ackResults.delete(ackCode);
-      renderMessages();
+      updateStoredMessage(message);
     }
   }
+  return message;
 }
 
 async function createChannel(event) {
@@ -814,9 +853,22 @@ function handlePacket(data) {
   }
 }
 
-async function sendDirectMessage(key, text) {
+async function sendDirectMessage(key, text, existingMessage = null) {
   const contact = state.contacts.get(key);
-  if (!contact || !state.connected) return;
+  if (!contact || !state.connected) throw new Error("Kontakt nicht verfügbar oder nicht verbunden.");
+
+  const message = existingMessage || {
+    kind: "contact",
+    outgoing: true,
+    prefix: contact.prefix,
+    pathLen: 0,
+    textType: TXT_TYPE_PLAIN,
+    timestamp: Math.floor(Date.now() / 1000),
+    text,
+  };
+  prepareMessageForSend(message);
+  if (!existingMessage) addMessage(message);
+  else updateStoredMessage(message);
 
   const payload = new Uint8Array(13 + encodeText(text).length);
   payload[0] = CMD.SEND_TXT_MSG;
@@ -826,20 +878,31 @@ async function sendDirectMessage(key, text) {
   payload.set(hexToBytes(contact.key.slice(0, 12)), 7);
   payload.set(encodeText(text), 13);
 
-  const response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 8000);
+  let response;
+  try {
+    response = await sendAndWait(payload, [RESP.SENT, RESP.OK], 8000);
+  } catch (error) {
+    markMessageFailed(message, error.message);
+    throw error;
+  }
   const ackCode = response[0] === RESP.SENT ? readU32(response, 2) : null;
-  addMessage({
-    kind: "contact",
-    outgoing: true,
-    prefix: contact.prefix,
-    pathLen: 0,
-    textType: TXT_TYPE_PLAIN,
-    timestamp: Math.floor(Date.now() / 1000),
-    text,
-    ackCode,
-    delivery: ackCode ? "Bestätigung ausstehend" : "An Funk übergeben",
-    sendResult: response[0] === RESP.SENT ? signedByte(response[1] ?? 0) : 0,
-  });
+  message.ackCode = ackCode;
+  message.estimatedTimeout = response[0] === RESP.SENT ? readU32(response, 6) : null;
+  message.deliveryStatus = ackCode ? "sent" : "confirmed";
+  message.delivery = ackCode ? "Gesendet" : "Bestätigt";
+  message.sendResult = response[0] === RESP.SENT ? signedByte(response[1] ?? 0) : 0;
+  updateStoredMessage(message);
+  if (ackCode) {
+    const earlyRoundTrip = state.ackResults.get(ackCode);
+    if (earlyRoundTrip == null) {
+      state.pendingAcks.set(ackCode, message);
+      scheduleAckTimeout(ackCode, message);
+    } else {
+      applyAck(message, earlyRoundTrip);
+      state.ackResults.delete(ackCode);
+      updateStoredMessage(message);
+    }
+  }
   return response;
 }
 
@@ -984,6 +1047,8 @@ function parseSelfInfo(data) {
   const name = decodeCString(data, 58, data.length - 58) || "(ohne Namen)";
 
   el.nodeName.textContent = name;
+  state.selfName = name === "(ohne Namen)" ? "" : name;
+  renderMessages();
   el.publicKey.textContent = pub || "-";
   el.selfLocation.innerHTML = renderLocationLink(lat, lon);
   el.radioSummary.textContent = freq
@@ -1064,7 +1129,7 @@ function parseContactMessage(data) {
     contact.lastSeen = timestamp;
     renderContacts();
   }
-  addMessage({ kind: "contact", prefix, pathLen, textType, timestamp, text: decodeUtf8(data.slice(textOffset)), snr });
+  addMessage({ kind: "contact", prefix, pathLen, textType, timestamp, text: decodeUtf8(data.slice(textOffset)), snr, rssi: getRecentRssi() });
 }
 
 function parseChannelMessage(data) {
@@ -1078,9 +1143,11 @@ function parseChannelMessage(data) {
     timestamp: readU32(data, offset + 3),
     text: decodeUtf8(data.slice(offset + 7)),
     snr: v3 ? signedByte(data[1]) / 4 : null,
+    rssi: getRecentRssi(),
   };
   addMessage(message);
   queueAutoPong(message);
+  queueAutoQuickReply(message);
 }
 
 function parseAck(data) {
@@ -1097,7 +1164,9 @@ function parseAck(data) {
   if (message) {
     applyAck(message, roundTrip);
     state.pendingAcks.delete(ackCode);
-    renderMessages();
+    clearTimeout(state.ackTimers.get(ackCode));
+    state.ackTimers.delete(ackCode);
+    updateStoredMessage(message);
     return;
   }
   if (state.expiredPingAcks.delete(ackCode)) return;
@@ -1113,8 +1182,14 @@ function parseLogData(data) {
 }
 
 function applyAck(message, roundTrip) {
+  message.deliveryStatus = "confirmed";
   message.delivery = "Bestätigt";
   message.roundTrip = roundTrip;
+}
+
+function getRecentRssi() {
+  if (!state.lastRf || Date.now() - state.lastRf.receivedAt > 2000) return null;
+  return state.lastRf.rssi;
 }
 
 function parseChannelData(data) {
@@ -1127,6 +1202,7 @@ function parseChannelData(data) {
     dataType: readU16(data, 6),
     text: `Data ${toHex(data.slice(9, 9 + len))}`,
     snr: signedByte(data[1]) / 4,
+    rssi: getRecentRssi(),
     timestamp: Math.floor(Date.now() / 1000),
   });
 }
@@ -1318,22 +1394,20 @@ function renderMessages() {
       ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)?.name
       : null;
     const isOutgoing = message.kind === "out" || message.outgoing === true;
-    const direction = isOutgoing ? "Gesendet" : "Empfangen";
+    const direction = isOutgoing ? "Ausgehend" : "Empfangen";
     const badge = isDm ? "DM" : channelLabel;
     const peer = isDm ? (contactName || message.prefix || "unbekannt") : null;
+    const deliveryStatus = getDeliveryStatus(message);
     const meta = [
+      badge,
       formatTime(message.timestamp),
       message.snr == null ? null : `SNR ${message.snr.toFixed(1)} dB`,
-      message.pathLen == null ? null : formatMessageRoute(message.pathLen),
+      message.rssi == null ? null : `RSSI ${message.rssi} dBm`,
+      message.pathLen == null ? null : formatHopCount(message.pathLen),
       message.textType == null ? null : `Texttyp ${message.textType}`,
       message.dataType == null ? null : `Typ 0x${message.dataType.toString(16)}`,
-      message.sendResult == null ? null : `Sendeergebnis ${message.sendResult}`,
-      message.delivery || null,
       message.roundTrip == null ? null : `Roundtrip ${message.roundTrip} ms`,
-      message.delivery === "Bestätigung ausstehend" && message.estimatedTimeout
-        ? `Timeout ${message.estimatedTimeout} ms`
-        : null,
-    ].filter(Boolean).join(" | ");
+    ].filter(Boolean).join(" · ");
       const replyContact = message.prefix
         ? [...state.contacts.values()].find((contact) => contact.prefix === message.prefix)
         : null;
@@ -1346,24 +1420,34 @@ function renderMessages() {
       : "";
     const quickReply = getQuickChannelReply(message);
     const quickReplyButton = quickReply
-      ? `<button type="button" class="secondary quick-reply-button" data-quick-reply-index="${state.messages.indexOf(message)}"${state.connected ? "" : " disabled"} title="${escapeHtml(quickReply.sender)} mit Hop-Info antworten" aria-label="${escapeHtml(quickReply.sender)} mit Hop-Info antworten">Hop</button>`
+      ? `<button type="button" class="secondary quick-reply-button" data-quick-reply-index="${state.messages.indexOf(message)}"${state.connected || !isValidPostalCode(state.autoPongPostalCode) ? "" : " disabled"} title="${escapeHtml(quickReply.sender)} mit Funkdaten antworten" aria-label="${escapeHtml(quickReply.sender)} mit Funkdaten antworten"><span aria-hidden="true">&#8617;</span><span>${quickReply.hops}</span></button>`
       : "";
     const channelReply = getChannelReply(message);
     const channelReplyButton = channelReply
       ? `<button type="button" class="secondary channel-reply-button" data-channel-reply-index="${state.messages.indexOf(message)}" title="${escapeHtml(channelReply.sender)} antworten" aria-label="${escapeHtml(channelReply.sender)} antworten">Antworten</button>`
       : "";
+    const retryButton = deliveryStatus === "failed"
+      ? `<button type="button" class="secondary retry-button" data-retry-index="${state.messages.indexOf(message)}"${state.connected ? "" : " disabled"} title="Nachricht erneut senden" aria-label="Nachricht erneut senden">&#8635;</button>`
+      : "";
+    const status = isOutgoing
+      ? `<span class="delivery-status ${deliveryStatus}"${message.failureReason ? ` title="${escapeHtml(message.failureReason)}"` : ""}>${escapeHtml(deliveryStatusLabel(deliveryStatus))}</span>`
+      : "";
+    const mentionsSelf = !isOutgoing && messageMentionsSelf(message);
     return `
-      <div class="message${isDm ? " dm" : ""}${isOutgoing ? " outgoing" : ""}">
+      <div class="message${isDm ? " dm" : ""}${isOutgoing ? " outgoing" : " incoming"}${mentionsSelf ? " mentions-self" : ""}">
         <div class="message-head">
-          <span class="badge${isDm ? " dm" : ""}">${escapeHtml(badge)}</span>
           <span class="direction">${escapeHtml(direction)}${peer ? ` von ${escapeHtml(peer)}` : ""}</span>
+          ${status}
+          <span class="message-actions">
           ${pongButton}
           ${quickReplyButton}
           ${channelReplyButton}
           ${replyButton}
+          ${retryButton}
+          </span>
         </div>
         <span class="message-text">${renderMessageText(message)}</span>
-        <span class="meta">${escapeHtml(meta)}</span>
+        <span class="meta message-meta">${escapeHtml(meta)}</span>
       </div>
     `;
   }).join("");
@@ -1484,9 +1568,96 @@ function getPingReply(message) {
   return { text: `@[${sender}] Pong - ${hops} Hops in ${state.autoPongPostalCode}`, sender, hops };
 }
 
+function getDeliveryStatus(message) {
+  if (message.deliveryStatus) return message.deliveryStatus;
+  if (message.delivery === "Bestätigt") return "confirmed";
+  if (message.delivery === "Fehlgeschlagen") return "failed";
+  if (message.delivery === "Bestätigung ausstehend" || message.delivery === "An Funk übergeben") return "sent";
+  return message.kind === "out" || message.outgoing ? "sent" : "";
+}
+
+function deliveryStatusLabel(status) {
+  return ({ waiting: "Wartet", sent: "Gesendet", confirmed: "Bestätigt", failed: "Fehlgeschlagen" })[status] || "";
+}
+
+function formatHopCount(pathLen) {
+  const hops = pathLen === 0xff ? 0 : pathLen & 0x3f;
+  return `${hops} ${hops === 1 ? "Hop" : "Hops"}`;
+}
+
+function messageMentionsSelf(message) {
+  const ownName = state.selfName.trim().toLowerCase();
+  if (!ownName) return false;
+  const text = String(message.text || "").toLowerCase();
+  return text.includes(`@[${ownName}]`) || text.includes(`@${ownName}`);
+}
+
+function prepareMessageForSend(message) {
+  if (message.ackCode) {
+    state.pendingAcks.delete(message.ackCode);
+    clearTimeout(state.ackTimers.get(message.ackCode));
+    state.ackTimers.delete(message.ackCode);
+  }
+  message.deliveryStatus = "waiting";
+  message.delivery = "Wartet";
+  message.failureReason = null;
+  message.ackCode = null;
+  message.roundTrip = null;
+  message.timestamp = Math.floor(Date.now() / 1000);
+}
+
+function updateStoredMessage(message) {
+  persistMessages();
+  renderMessages();
+}
+
+function markMessageFailed(message, reason) {
+  message.deliveryStatus = "failed";
+  message.delivery = "Fehlgeschlagen";
+  message.failureReason = reason || "Keine Bestätigung erhalten.";
+  updateStoredMessage(message);
+}
+
+function scheduleAckTimeout(ackCode, message) {
+  const timeout = Math.max(5000, Number(message.estimatedTimeout) || 30000) + PING_ACK_TIMEOUT_BUFFER_MS;
+  clearTimeout(state.ackTimers.get(ackCode));
+  state.ackTimers.set(ackCode, setTimeout(() => {
+    if (state.pendingAcks.get(ackCode) !== message) return;
+    state.pendingAcks.delete(ackCode);
+    state.ackTimers.delete(ackCode);
+    markMessageFailed(message, "Keine Bestätigung empfangen.");
+  }, timeout));
+}
+
+function failPendingMessages(reason) {
+  for (const [ackCode, message] of state.pendingAcks) {
+    clearTimeout(state.ackTimers.get(ackCode));
+    message.deliveryStatus = "failed";
+    message.delivery = "Fehlgeschlagen";
+    message.failureReason = reason;
+  }
+  state.pendingAcks.clear();
+  state.ackTimers.clear();
+  persistMessages();
+  renderMessages();
+}
+
+async function retryMessage(message) {
+  if (message.kind === "out") {
+    await sendChannelMessage(message.channel, message.text, message);
+    return;
+  }
+  if (message.kind === "contact" && message.outgoing) {
+    const contact = [...state.contacts.values()].find((item) => item.prefix === message.prefix);
+    if (!contact) throw new Error("Kontakt ist nicht mehr verfügbar.");
+    await sendDirectMessage(contact.key, message.text, message);
+  }
+}
+
 function getQuickChannelReply(message) {
   if (message.kind !== "channel" || message.channel == null || message.outgoing === true) return null;
-  if (!isQuickReplyChannel(message.channel) || !isValidPostalCode(state.autoPongPostalCode)) return null;
+  const rule = getQuickReplyRule(message.channel);
+  if (!rule?.enabled) return null;
 
   const text = String(message.text || "");
   const separator = text.indexOf(":");
@@ -1495,16 +1666,133 @@ function getQuickChannelReply(message) {
   if (!sender) return null;
 
   const hops = message.pathLen === 0xff ? 0 : (message.pathLen ?? 0) & 0x3f;
-  return { text: `@[${sender}] ${hops} Hops in ${state.autoPongPostalCode}`, sender, hops };
+  const values = {
+    name: sender,
+    hops: String(hops),
+    plz: state.autoPongPostalCode,
+    snr: message.snr == null ? "-" : `${message.snr.toFixed(1)} dB`,
+    rssi: message.rssi == null ? "-" : `${message.rssi} dBm`,
+  };
+  const replyText = String(rule.template || DEFAULT_QUICK_REPLY_TEMPLATE)
+    .replace(/\{(name|hops|plz|snr|rssi)\}/g, (_, key) => values[key]);
+  return { text: replyText, sender, hops, rule, body: text.slice(separator + 1).trim() };
 }
 
-function isQuickReplyChannel(channelIndex) {
+function getQuickReplyRule(channelIndex) {
   const channelName = state.channels.get(channelIndex)?.name || (channelIndex === 0 ? "Public" : "");
-  return QUICK_REPLY_TARGET_CHANNELS.has(normalizeChannelName(channelName));
+  const key = normalizeChannelName(channelName);
+  return state.quickReplyRules[key] || (QUICK_REPLY_DEFAULT_CHANNELS.has(key)
+    ? { enabled: true, template: DEFAULT_QUICK_REPLY_TEMPLATE, keywords: "", auto: false }
+    : null);
 }
 
 function normalizeChannelName(channelName) {
   return String(channelName || "").replace(/^#/, "").trim().toLowerCase();
+}
+
+function loadQuickReplyRules() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("meshcore-dashboard-quick-reply-rules") || "null");
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) return saved;
+  } catch {}
+  return Object.fromEntries([...QUICK_REPLY_DEFAULT_CHANNELS].map((channel) => [channel, {
+    enabled: true,
+    template: DEFAULT_QUICK_REPLY_TEMPLATE,
+    keywords: "",
+    auto: false,
+  }]));
+}
+
+function renderQuickReplyRules() {
+  const known = [...state.channels.values()]
+    .filter((channel) => channel.enabled || channel.name)
+    .map((channel) => normalizeChannelName(channel.name || (channel.index === 0 ? "Public" : `Kanal ${channel.index}`)));
+  const names = [...new Set([...Object.keys(state.quickReplyRules), ...known])].filter(Boolean).sort();
+  el.quickReplyRules.innerHTML = names.map((name) => {
+    const rule = state.quickReplyRules[name] || {
+      enabled: QUICK_REPLY_DEFAULT_CHANNELS.has(name),
+      template: DEFAULT_QUICK_REPLY_TEMPLATE,
+      keywords: "",
+      auto: false,
+    };
+    return `<div class="quick-reply-rule" data-rule-channel="${escapeHtml(name)}">
+      <div class="quick-reply-rule-head">
+        <label class="switch-control">
+          <input type="checkbox" data-rule-field="enabled"${rule.enabled ? " checked" : ""}>
+          <span class="switch-track" aria-hidden="true"></span>
+          <strong>#${escapeHtml(name)}</strong>
+        </label>
+        <label class="switch-control" title="Nur bei passenden Schlüsselwörtern automatisch antworten">
+          <input type="checkbox" data-rule-field="auto"${rule.auto ? " checked" : ""}>
+          <span class="switch-track" aria-hidden="true"></span>
+          <span>Auto</span>
+        </label>
+      </div>
+      <label class="field-label">Vorlage
+        <input type="text" data-rule-field="template" maxlength="150" value="${escapeHtml(rule.template || DEFAULT_QUICK_REPLY_TEMPLATE)}">
+      </label>
+      <label class="field-label">Schlüsselwörter
+        <input type="text" data-rule-field="keywords" maxlength="120" placeholder="ping, standort, signal" value="${escapeHtml(rule.keywords || "")}">
+      </label>
+    </div>`;
+  }).join("");
+}
+
+function readQuickReplyRules() {
+  const rules = { ...state.quickReplyRules };
+  el.quickReplyRules.querySelectorAll("[data-rule-channel]").forEach((row) => {
+    const field = (name) => row.querySelector(`[data-rule-field="${name}"]`);
+    rules[row.dataset.ruleChannel] = {
+      enabled: field("enabled").checked,
+      auto: field("auto").checked,
+      template: field("template").value.trim() || DEFAULT_QUICK_REPLY_TEMPLATE,
+      keywords: field("keywords").value.trim(),
+    };
+  });
+  return rules;
+}
+
+function queueAutoQuickReply(message) {
+  const reply = getQuickChannelReply(message);
+  if (!reply?.rule.auto || !state.connected || !isValidPostalCode(state.autoPongPostalCode)) return;
+  const keywords = String(reply.rule.keywords || "").split(",").map((word) => word.trim().toLowerCase()).filter(Boolean);
+  if (!keywords.length || !keywords.some((word) => reply.body.toLowerCase().includes(word))) return;
+  setTimeout(() => maybeSendAutoQuickReply(message), 1000);
+}
+
+async function maybeSendAutoQuickReply(message) {
+  const reply = getQuickChannelReply(message);
+  if (!reply?.rule.auto || !state.connected || !isValidPostalCode(state.autoPongPostalCode)) return;
+  const fingerprint = `${message.channel}\u001f${message.timestamp}\u001f${message.text}`;
+  if (state.quickReplyHandled.has(fingerprint)) return;
+  state.quickReplyHandled.add(fingerprint);
+  persistHandledQuickReplies();
+  const senderKey = `${message.channel}:${reply.sender.toLowerCase()}`;
+  const now = Date.now();
+  if (now - (state.quickReplyCooldowns.get(senderKey) || 0) < AUTO_PONG_COOLDOWN_MS) return;
+  state.quickReplyCooldowns.set(senderKey, now);
+  try {
+    await sendChannelMessage(message.channel, reply.text);
+    log(`Auto-Schnellantwort an ${reply.sender} gesendet.`);
+  } catch (error) {
+    log(`Auto-Schnellantwort an ${reply.sender} fehlgeschlagen: ${error.message}`, "error");
+  }
+}
+
+function loadHandledQuickReplies() {
+  try {
+    const values = JSON.parse(localStorage.getItem("meshcore-dashboard-quick-reply-handled") || "[]");
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistHandledQuickReplies() {
+  while (state.quickReplyHandled.size > 200) state.quickReplyHandled.delete(state.quickReplyHandled.values().next().value);
+  try {
+    localStorage.setItem("meshcore-dashboard-quick-reply-handled", JSON.stringify([...state.quickReplyHandled]));
+  } catch {}
 }
 
 function getChannelReply(message) {
@@ -1583,6 +1871,7 @@ function isValidPostalCode(postalCode) {
 function openAutoPongSettings() {
   el.autoPongPostalCodeInput.value = state.autoPongPostalCode;
   el.autoPongPostalCodeInput.setCustomValidity("");
+  renderQuickReplyRules();
   el.autoPongSettingsDialog.showModal();
   el.autoPongPostalCodeInput.focus();
 }

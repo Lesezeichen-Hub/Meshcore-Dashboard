@@ -98,7 +98,7 @@
                   <span class="switch-track" aria-hidden="true"></span>
                   <span>Auto-Pong</span>
                 </label>
-                <button id="autoPongSettingsBtn" type="button" class="subtle-icon-button" aria-label="Auto-Pong-PLZ einstellen" title="Auto-Pong-PLZ einstellen"><span aria-hidden="true">&#9881;</span></button>
+                <button id="autoPongSettingsBtn" type="button" class="subtle-icon-button" aria-label="Antwortregeln einstellen" title="Antwortregeln einstellen"><span aria-hidden="true">&#9881;</span></button>
               </div>
               <label class="switch-control" title="Kompakte Chatansicht">
                 <input id="compactChatToggle" type="checkbox">
@@ -143,14 +143,19 @@
       </section>
     </main>
 
-    <dialog id="autoPongSettingsDialog" class="settings-dialog" aria-labelledby="autoPongSettingsTitle">
+    <dialog id="autoPongSettingsDialog" class="settings-dialog reply-settings-dialog" aria-labelledby="autoPongSettingsTitle">
       <form id="autoPongSettingsForm" method="dialog">
         <div class="dialog-head">
-          <h2 id="autoPongSettingsTitle">Auto-Pong einstellen</h2>
+          <h2 id="autoPongSettingsTitle">Antwortregeln</h2>
           <button id="closeAutoPongSettingsBtn" type="button" class="secondary dialog-close" aria-label="Einstellungen schließen" title="Schließen">&times;</button>
         </div>
         <label class="field-label" for="autoPongPostalCodeInput">PLZ des mobilen Nodes</label>
         <input id="autoPongPostalCodeInput" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="5" pattern="[0-9]{5}" placeholder="12345" required>
+        <div class="rule-section-head">
+          <span class="field-label">Schnellantworten je Kanal</span>
+          <span class="template-legend mono">{name} {hops} {plz} {snr} {rssi}</span>
+        </div>
+        <div id="quickReplyRules" class="quick-reply-rules"></div>
         <div class="dialog-actions">
           <button type="submit">Speichern</button>
         </div>
