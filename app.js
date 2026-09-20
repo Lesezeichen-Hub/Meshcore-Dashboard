@@ -118,6 +118,8 @@ const state = {
   weatherCooldowns: new Map(),
   autoPongEnabled: loadAutoPongSetting() && isValidPostalCode(loadAutoPongPostalCode()),
   autoPongPostalCode: loadAutoPongPostalCode(),
+  postalLocation: loadPostalLocation(),
+  postalLocationRequest: null,
   autoPongHandled: loadHandledPings(),
   autoPongCooldowns: new Map(),
   autoPongQueue: [],
@@ -194,6 +196,7 @@ el.weatherToggle.checked = state.weatherEnabled;
 applyChatDensity(loadChatDensity());
 initializeCollapsiblePanels();
 renderNetworkOverview();
+resolvePostalLocation();
 registerServiceWorker();
 setInterval(() => {
   renderContacts();
@@ -259,6 +262,7 @@ el.autoPongSettingsForm.addEventListener("submit", (event) => {
   }
   el.autoPongPostalCodeInput.setCustomValidity("");
   state.autoPongPostalCode = postalCode;
+  if (state.postalLocation?.postalCode !== postalCode) state.postalLocation = null;
   state.quickReplyRules = readQuickReplyRules();
   try {
     localStorage.setItem("meshcore-dashboard-auto-pong-postal-code", postalCode);
@@ -268,6 +272,7 @@ el.autoPongSettingsForm.addEventListener("submit", (event) => {
   }
   el.autoPongSettingsDialog.close();
   showActionNotice("Antwortregeln gespeichert.");
+  resolvePostalLocation();
   renderMessages();
 });
 el.autoPongPostalCodeInput.addEventListener("input", () => {
@@ -2211,6 +2216,51 @@ function loadAutoPongPostalCode() {
   }
 }
 
+function loadPostalLocation() {
+  try {
+    const location = JSON.parse(localStorage.getItem("meshcore-dashboard-postal-location") || "null");
+    return location && isValidPostalCode(location.postalCode) && Number.isFinite(location.lat) && Number.isFinite(location.lon)
+      ? location
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolvePostalLocation() {
+  const postalCode = state.autoPongPostalCode;
+  if (!isValidPostalCode(postalCode) || hasValidPosition({ lat: state.selfLat, lon: state.selfLon })) return;
+  if (state.postalLocation?.postalCode === postalCode || state.postalLocationRequest) {
+    renderNetworkOverview();
+    return;
+  }
+
+  state.postalLocationRequest = (async () => {
+    const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
+    url.searchParams.set("name", postalCode);
+    url.searchParams.set("count", "1");
+    url.searchParams.set("language", "de");
+    url.searchParams.set("format", "json");
+    url.searchParams.set("countryCode", "DE");
+    const result = await fetchJsonWithTimeout(url);
+    const match = Array.isArray(result.results) ? result.results[0] : null;
+    if (!match || !Number.isFinite(match.latitude) || !Number.isFinite(match.longitude)) throw new Error("PLZ nicht gefunden");
+    state.postalLocation = {
+      postalCode,
+      name: [match.name, match.admin1].filter(Boolean).join(", "),
+      lat: Math.round(match.latitude * 1e6),
+      lon: Math.round(match.longitude * 1e6),
+    };
+    try {
+      localStorage.setItem("meshcore-dashboard-postal-location", JSON.stringify(state.postalLocation));
+    } catch {}
+    renderNetworkOverview();
+  })().catch((error) => log(`PLZ ${postalCode} konnte nicht aufgeloest werden: ${error.message}`, "error")).finally(() => {
+    state.postalLocationRequest = null;
+  });
+  await state.postalLocationRequest;
+}
+
 function isValidPostalCode(postalCode) {
   return /^\d{5}$/.test(postalCode);
 }
@@ -2466,6 +2516,22 @@ function hasValidPosition(item) {
   return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
 }
 
+function getReferenceLocation() {
+  if (hasValidPosition({ lat: state.selfLat, lon: state.selfLon })) {
+    return { name: state.selfName || "Eigener Node", lat: state.selfLat, lon: state.selfLon, self: true, approximate: false };
+  }
+  if (state.postalLocation?.postalCode === state.autoPongPostalCode && hasValidPosition(state.postalLocation)) {
+    return {
+      name: `PLZ ${state.postalLocation.postalCode}${state.postalLocation.name ? ` (${state.postalLocation.name})` : ""}`,
+      lat: state.postalLocation.lat,
+      lon: state.postalLocation.lon,
+      self: true,
+      approximate: true,
+    };
+  }
+  return null;
+}
+
 function renderNetworkOverview() {
   renderNetworkMap();
   renderRouteOverview();
@@ -2475,9 +2541,7 @@ function renderNetworkOverview() {
 
 function renderNetworkMap() {
   const contacts = [...state.contacts.values()].filter(hasValidPosition);
-  const self = hasValidPosition({ lat: state.selfLat, lon: state.selfLon })
-    ? { name: state.selfName || "Eigener Node", lat: state.selfLat, lon: state.selfLon, self: true }
-    : null;
+  const self = getReferenceLocation();
   const nodes = self ? [self, ...contacts] : contacts;
   el.mappedContactCount.textContent = `${contacts.length} Position${contacts.length === 1 ? "" : "en"}`;
   if (!nodes.length) {
@@ -2521,7 +2585,7 @@ function renderNetworkMap() {
       icon: L.divIcon({ className: `mesh-map-marker ${typeClass}`, iconSize: [18, 18], iconAnchor: [9, 9] }),
     });
     const signal = node.lastSnr == null ? "Kein Signalwert" : `SNR ${node.lastSnr.toFixed(1)} dB`;
-    const route = node.self ? "Eigener Node" : formatContactRoute(node.outPathLen);
+    const route = node.self ? (node.approximate ? "Aus PLZ angenaehert" : "Eigener Node") : formatContactRoute(node.outPathLen);
     marker.bindPopup(`<strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(TYPE_NAMES[node.type] || route)}</span><span>${escapeHtml(route)} | ${escapeHtml(signal)}</span><span>${lat.toFixed(5)}, ${lon.toFixed(5)}</span>`);
     marker.bindTooltip(node.name, { direction: "top", offset: [0, -10] });
     state.networkMarkerLayer.addLayer(marker);
@@ -2567,24 +2631,47 @@ function renderRangeStats() {
   const snrValues = messages.map((message) => Number(message.snr)).filter(Number.isFinite);
   const rssiValues = messages.map((message) => Number(message.rssi)).filter(Number.isFinite);
   const hopValues = state.messages.map((message) => message.pathLen == null ? null : (message.pathLen === 0xff ? 0 : message.pathLen & 0x3f)).filter(Number.isFinite);
-  const distances = hasValidPosition({ lat: state.selfLat, lon: state.selfLon })
-    ? [...state.contacts.values()].filter(hasValidPosition).map((contact) => ({ name: contact.name, distance: distanceKm(state.selfLat, state.selfLon, contact.lat, contact.lon) }))
-    : [];
-  const farthest = distances.sort((a, b) => b.distance - a.distance)[0];
-  if (!snrValues.length && !rssiValues.length && !hopValues.length && !farthest) {
+  const rangeDistance = getRangeDistance();
+  if (!snrValues.length && !rssiValues.length && !hopValues.length && !rangeDistance) {
     el.rangeStats.className = "stat-grid empty";
     el.rangeStats.textContent = "Noch keine Funkdaten.";
     return;
   }
   const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
   const stats = [
-    ["Weitester Node", farthest ? `${farthest.name} (${formatNumber(farthest.distance, 1)} km)` : "-"],
+    [rangeDistance?.fromSelf ? `Weitester Node${rangeDistance.approximate ? " (ab PLZ)" : ""}` : "Groesste bekannte Distanz", rangeDistance ? `${rangeDistance.label} (${rangeDistance.approximate ? "ca. " : ""}${formatNumber(rangeDistance.distance, 1)} km)` : "-"],
     ["Mittlere SNR", snrValues.length ? `${formatNumber(average(snrValues), 1)} dB` : "-"],
     ["Mittlere RSSI", rssiValues.length ? `${formatNumber(average(rssiValues), 0)} dBm` : "-"],
     ["Maximale Hops", hopValues.length ? String(Math.max(...hopValues)) : "-"],
   ];
   el.rangeStats.className = "stat-grid";
   el.rangeStats.innerHTML = stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+}
+
+function getRangeDistance() {
+  const contacts = [...state.contacts.values()].filter(hasValidPosition);
+  const reference = getReferenceLocation();
+  if (reference) {
+    return contacts
+      .map((contact) => ({
+        label: contact.name,
+        distance: distanceKm(reference.lat, reference.lon, contact.lat, contact.lon),
+        fromSelf: true,
+        approximate: reference.approximate,
+      }))
+      .sort((a, b) => b.distance - a.distance)[0] || null;
+  }
+
+  let farthest = null;
+  for (let first = 0; first < contacts.length; first += 1) {
+    for (let second = first + 1; second < contacts.length; second += 1) {
+      const distance = distanceKm(contacts[first].lat, contacts[first].lon, contacts[second].lat, contacts[second].lon);
+      if (!farthest || distance > farthest.distance) {
+        farthest = { label: `${contacts[first].name} - ${contacts[second].name}`, distance, fromSelf: false };
+      }
+    }
+  }
+  return farthest;
 }
 
 function distanceKm(latA, lonA, latB, lonB) {
