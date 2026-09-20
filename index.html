@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MeshCore Dashboard</title>
+    <meta name="theme-color" content="#111414">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="style.css">
   </head>
   <body>
@@ -22,6 +25,10 @@
           <button id="bleConnectBtn" type="button" class="secondary">Bluetooth</button>
           <button id="syncBtn" type="button" disabled>Sync</button>
           <button id="advertBtn" type="button" disabled>Advert senden</button>
+          <button id="exportConfigBtn" type="button" class="secondary" title="Dashboard-Konfiguration exportieren">Export</button>
+          <button id="importConfigBtn" type="button" class="secondary" title="Dashboard-Konfiguration importieren">Import</button>
+          <input id="importConfigInput" type="file" accept="application/json,.json" hidden>
+          <button id="installAppBtn" type="button" class="secondary" hidden>Installieren</button>
           <button id="disconnectBtn" type="button" disabled>Trennen</button>
         </div>
       </div>
@@ -138,7 +145,46 @@
             </div>
           </div>
           <div id="channelTabs" class="channel-tabs" aria-label="Kanäle"></div>
+          <div class="message-filter-bar">
+            <input id="messageSearch" type="search" placeholder="Nachrichten durchsuchen..." aria-label="Nachrichten durchsuchen">
+            <select id="messageDirectionFilter" aria-label="Nachrichtenrichtung">
+              <option value="all">Alle Richtungen</option>
+              <option value="incoming">Empfangen</option>
+              <option value="outgoing">Ausgehend</option>
+            </select>
+            <select id="messageKindFilter" aria-label="Nachrichtentyp">
+              <option value="all">Alle Typen</option>
+              <option value="channel">Kanal</option>
+              <option value="contact">Direktnachricht</option>
+              <option value="data">Daten</option>
+            </select>
+          </div>
           <div id="messages" class="messages empty">Noch keine Nachrichten.</div>
+        </article>
+
+        <article class="panel span-2" data-panel-id="network">
+          <div class="panel-head">
+            <h2>Netzwerk</h2>
+            <span id="mappedContactCount" class="chip">0 Positionen</span>
+          </div>
+          <div class="network-grid">
+            <section class="network-section">
+              <h3>Netzkarte</h3>
+              <div id="networkMap" class="network-map empty">Noch keine Kontakte mit Position.</div>
+            </section>
+            <section class="network-section">
+              <h3>Routen</h3>
+              <div id="routeOverview" class="network-list empty">Noch keine Routendaten.</div>
+            </section>
+            <section class="network-section">
+              <h3>Reichweite</h3>
+              <div id="rangeStats" class="stat-grid empty">Noch keine Funkdaten.</div>
+            </section>
+            <section class="network-section">
+              <h3>Paketdiagnose</h3>
+              <div id="packetDiagnostics" class="stat-grid"></div>
+            </section>
+          </div>
         </article>
 
         <article class="panel span-2" data-panel-id="log">
@@ -183,6 +229,8 @@
         <dt><code>wetter &lt;Ort&gt; 3</code></dt><dd>Drei-Tage-Ausblick</dd>
         <dt><code>regen &lt;Ort&gt;</code></dt><dd>Regen der naechsten 6 Stunden</dd>
         <dt><code>wetter hilfe</code></dt><dd>Kurzinfo im Kanal</dd>
+        <dt><code>zeit &lt;Ort&gt;</code></dt><dd>Lokale Uhrzeit</dd>
+        <dt><code>sonne &lt;Ort&gt;</code></dt><dd>Sonnenauf- und -untergang</dd>
       </dl>
     </dialog>
 

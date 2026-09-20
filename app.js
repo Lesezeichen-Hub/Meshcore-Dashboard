@@ -91,6 +91,14 @@ const state = {
   ackTimers: new Map(),
   activeChannel: "all",
   contactSearch: "",
+  messageSearch: "",
+  messageDirectionFilter: "all",
+  messageKindFilter: "all",
+  favoriteContacts: loadFavoriteContacts(),
+  packetStats: { total: 0, errors: 0, unknown: 0, byType: new Map() },
+  selfLat: null,
+  selfLon: null,
+  installPrompt: null,
   dmTarget: null,
   unreadChannels: new Map(),
   ackResults: new Map(),
@@ -161,6 +169,18 @@ const el = {
   quickReplyRules: document.querySelector("#quickReplyRules"),
   closeAutoPongSettingsBtn: document.querySelector("#closeAutoPongSettingsBtn"),
   compactChatToggle: document.querySelector("#compactChatToggle"),
+  messageSearch: document.querySelector("#messageSearch"),
+  messageDirectionFilter: document.querySelector("#messageDirectionFilter"),
+  messageKindFilter: document.querySelector("#messageKindFilter"),
+  networkMap: document.querySelector("#networkMap"),
+  mappedContactCount: document.querySelector("#mappedContactCount"),
+  routeOverview: document.querySelector("#routeOverview"),
+  rangeStats: document.querySelector("#rangeStats"),
+  packetDiagnostics: document.querySelector("#packetDiagnostics"),
+  exportConfigBtn: document.querySelector("#exportConfigBtn"),
+  importConfigBtn: document.querySelector("#importConfigBtn"),
+  importConfigInput: document.querySelector("#importConfigInput"),
+  installAppBtn: document.querySelector("#installAppBtn"),
 };
 
 applyTheme(loadTheme());
@@ -168,6 +188,12 @@ el.autoPongToggle.checked = state.autoPongEnabled;
 el.weatherToggle.checked = state.weatherEnabled;
 applyChatDensity(loadChatDensity());
 initializeCollapsiblePanels();
+renderNetworkOverview();
+registerServiceWorker();
+setInterval(() => {
+  renderContacts();
+  renderMessages();
+}, 60000);
 
 if (!("serial" in navigator) && !("bluetooth" in navigator)) {
   el.supportHint.textContent = "USB/Bluetooth benötigen Chrome oder Edge auf localhost beziehungsweise HTTPS.";
@@ -281,6 +307,27 @@ el.contactSearch.addEventListener("input", (event) => {
   state.contactSearch = event.target.value.trim().toLowerCase();
   renderContacts();
 });
+el.messageSearch.addEventListener("input", (event) => {
+  state.messageSearch = event.target.value.trim().toLowerCase();
+  renderMessages();
+});
+el.messageDirectionFilter.addEventListener("change", (event) => {
+  state.messageDirectionFilter = event.target.value;
+  renderMessages();
+});
+el.messageKindFilter.addEventListener("change", (event) => {
+  state.messageKindFilter = event.target.value;
+  renderMessages();
+});
+el.exportConfigBtn.addEventListener("click", exportConfiguration);
+el.importConfigBtn.addEventListener("click", () => el.importConfigInput.click());
+el.importConfigInput.addEventListener("change", importConfiguration);
+el.installAppBtn.addEventListener("click", installDashboard);
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  state.installPrompt = event;
+  el.installAppBtn.hidden = false;
+});
 el.channelTabs.addEventListener("click", (event) => {
   const tab = event.target.closest("button[data-channel-index]");
   if (!tab) return;
@@ -345,6 +392,11 @@ el.sendForm.addEventListener("submit", async (event) => {
 });
 el.channelForm.addEventListener("submit", createChannel);
 el.contacts.addEventListener("click", (event) => {
+  const favoriteBtn = event.target.closest("button[data-favorite]");
+  if (favoriteBtn) {
+    toggleFavoriteContact(favoriteBtn.dataset.favorite);
+    return;
+  }
   const pingBtn = event.target.closest("button[data-ping]");
   if (pingBtn) {
     pingContact(pingBtn.dataset.ping);
@@ -804,6 +856,7 @@ function ingestBytes(bytes) {
 function handlePacket(data) {
   if (!data.length) return;
   const code = data[0];
+  recordPacket(code);
   log(`RX ${packetName(code)} ${toHex(data)}`);
 
   const waiterIndex = state.waiters.findIndex((waiter) => waiter.responseCodes.includes(code) || code === RESP.ERROR);
@@ -870,11 +923,14 @@ function handlePacket(data) {
     case RESP.SENT:
       break;
     case RESP.ERROR:
+      state.packetStats.errors += 1;
       log(`MeshCore Fehlercode: ${data[1] ?? "unbekannt"}`, "error");
       break;
     default:
+      state.packetStats.unknown += 1;
       log(`Unbekannter Pakettyp 0x${code.toString(16).padStart(2, "0")}`);
   }
+  renderPacketDiagnostics();
 }
 
 async function sendDirectMessage(key, text, existingMessage = null) {
@@ -1072,12 +1128,15 @@ function parseSelfInfo(data) {
 
   el.nodeName.textContent = name;
   state.selfName = name === "(ohne Namen)" ? "" : name;
+  state.selfLat = lat;
+  state.selfLon = lon;
   renderMessages();
   el.publicKey.textContent = pub || "-";
   el.selfLocation.innerHTML = renderLocationLink(lat, lon);
   el.radioSummary.textContent = freq
     ? `${(freq / 1000000).toFixed(3)} MHz, BW ${(bw / 1000).toFixed(0)} kHz, SF${sf}, CR${cr}`
     : "-";
+  renderNetworkOverview();
 }
 
 function parseDeviceInfo(data) {
@@ -1122,6 +1181,7 @@ function parseContact(data) {
   state.contacts.set(key, contact);
   state.contactOrder.set(key, ++state.contactSequence);
   renderContacts();
+  renderNetworkOverview();
 }
 
 function parseChannel(data) {
@@ -1251,6 +1311,7 @@ function addMessage(message) {
   persistMessages();
   renderMessages();
   renderChannelTabs();
+  renderNetworkOverview();
 }
 
 function loadStoredMessages() {
@@ -1274,6 +1335,8 @@ function persistMessages() {
 
 function renderContacts() {
   const contacts = [...state.contacts.values()].sort((a, b) => {
+    const favoriteDifference = Number(state.favoriteContacts.has(b.key)) - Number(state.favoriteContacts.has(a.key));
+    if (favoriteDifference) return favoriteDifference;
     const orderA = state.contactOrder.get(a.key) || 0;
     const orderB = state.contactOrder.get(b.key) || 0;
     return orderB - orderA;
@@ -1296,16 +1359,17 @@ function renderContacts() {
   el.contacts.className = "table";
   el.contacts.innerHTML = `
     <table class="contact-table">
-      <thead><tr><th>Name</th><th>Typ</th><th>Routing</th><th>Signal</th><th>Position</th><th>Letztes Advert</th><th>Public Key</th><th>Aktion</th></tr></thead>
+      <thead><tr><th>Favorit</th><th>Name</th><th>Typ</th><th>Routing</th><th>Signal</th><th>Position</th><th>Letztes Advert</th><th>Public Key</th><th>Aktion</th></tr></thead>
       <tbody>
         ${visible.map((contact) => `
           <tr>
+            <td><button type="button" class="secondary favorite-button" data-favorite="${escapeHtml(contact.key)}" aria-pressed="${state.favoriteContacts.has(contact.key)}" aria-label="${state.favoriteContacts.has(contact.key) ? "Aus Favoriten entfernen" : "Zu Favoriten hinzufuegen"}" title="Favorit">${state.favoriteContacts.has(contact.key) ? "&#9733;" : "&#9734;"}</button></td>
             <td>${escapeHtml(contact.name)}</td>
             <td>${escapeHtml(TYPE_NAMES[contact.type] || `Typ ${contact.type}`)}</td>
             <td>${escapeHtml(formatContactRoute(contact.outPathLen))}</td>
             <td>${contact.lastSnr == null ? "-" : `${contact.lastSnr.toFixed(1)} dB SNR`}</td>
             <td>${renderLocationLink(contact.lat, contact.lon)}</td>
-            <td>${formatTime(contact.lastAdvert)}</td>
+            <td>${renderTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
             <td>
               ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : "-"}
@@ -1393,12 +1457,16 @@ function renderMessages() {
   }
 
   const filtered = state.messages.filter((message) => {
-    if (state.activeChannel === "all") return true;
-    if (state.activeChannel === "dm") return message.kind === "contact" || message.outgoing === true;
-    if (message.kind === "channel" || message.kind === "data" || message.kind === "out") {
-      return Number(message.channel) === Number(state.activeChannel);
-    }
-    return false;
+    const inActiveChannel = state.activeChannel === "all"
+      || (state.activeChannel === "dm" && (message.kind === "contact" || message.outgoing === true))
+      || (["channel", "data", "out"].includes(message.kind) && Number(message.channel) === Number(state.activeChannel));
+    if (!inActiveChannel) return false;
+    const outgoing = message.kind === "out" || message.outgoing === true;
+    if (state.messageDirectionFilter !== "all" && state.messageDirectionFilter !== (outgoing ? "outgoing" : "incoming")) return false;
+    const kind = message.kind === "out" ? "channel" : message.kind;
+    if (state.messageKindFilter !== "all" && state.messageKindFilter !== kind) return false;
+    if (state.messageSearch && !String(message.text || "").toLowerCase().includes(state.messageSearch)) return false;
+    return true;
   });
 
   if (!filtered.length) {
@@ -1425,7 +1493,7 @@ function renderMessages() {
     const deliveryStatus = getDeliveryStatus(message);
     const meta = [
       badge,
-      formatTime(message.timestamp),
+      formatRelativeTime(message.timestamp),
       message.snr == null ? null : `SNR ${message.snr.toFixed(1)} dB`,
       message.rssi == null ? null : `RSSI ${message.rssi} dBm`,
       message.pathLen == null ? null : formatHopCount(message.pathLen),
@@ -1472,7 +1540,7 @@ function renderMessages() {
           </span>
         </div>
         <span class="message-text">${renderMessageText(message)}</span>
-        <span class="meta message-meta">${escapeHtml(meta)}</span>
+        <span class="meta message-meta" title="${escapeHtml(formatExactTime(message.timestamp))}">${escapeHtml(meta)}</span>
       </div>
     `;
   }).join("");
@@ -1836,6 +1904,11 @@ function getWeatherRequest(message) {
     return { sender, mode: "help", place: "" };
   }
 
+  const infoMatch = body.match(/^(zeit|sonne)\s+(.{2,80})$/i);
+  if (infoMatch) {
+    return { sender, mode: infoMatch[1].toLowerCase(), place: infoMatch[2].trim().replace(/\s+/g, " ") };
+  }
+
   const rainMatch = body.match(/^regen\s+(.{2,80})$/i);
   if (rainMatch) {
     return { sender, mode: "rain", place: rainMatch[1].trim().replace(/\s+/g, " ") };
@@ -1911,7 +1984,7 @@ async function fetchWeatherSummary(place) {
   forecastUrl.searchParams.set("longitude", String(location.longitude));
   forecastUrl.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m");
   forecastUrl.searchParams.set("hourly", "precipitation_probability,precipitation");
-  forecastUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum");
+  forecastUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,sunrise,sunset");
   forecastUrl.searchParams.set("timezone", "auto");
   forecastUrl.searchParams.set("forecast_days", "3");
 
@@ -1929,6 +2002,7 @@ async function fetchWeatherSummary(place) {
     currentTime: forecast.current.time,
     hourly: forecast.hourly,
     daily: forecast.daily,
+    timezone: forecast.timezone,
   };
 }
 
@@ -1949,6 +2023,8 @@ function formatWeatherReply(sender, weather, mode) {
   if (mode === "morgen") return formatDailyWeatherReply(sender, weather, 1, "Morgen");
   if (mode === "three-days") return formatThreeDayWeatherReply(sender, weather);
   if (mode === "rain") return formatRainReply(sender, weather);
+  if (mode === "zeit") return formatLocalTimeReply(sender, weather);
+  if (mode === "sonne") return formatSunReply(sender, weather);
 
   const place = [weather.place, weather.admin].filter(Boolean).join(", ");
   const parts = [
@@ -1991,7 +2067,19 @@ function formatRainReply(sender, weather) {
 }
 
 function formatWeatherHelp(sender) {
-  return trimMessage(`@[${sender}] Befehle: wetter <Ort> | wetter <Ort> heute | wetter <Ort> morgen | wetter <Ort> 3 | regen <Ort>`);
+  return trimMessage(`@[${sender}] wetter <Ort> [heute|morgen|3] | regen <Ort> | zeit <Ort> | sonne <Ort>`);
+}
+
+function formatLocalTimeReply(sender, weather) {
+  const time = new Intl.DateTimeFormat("de-DE", { timeZone: weather.timezone, weekday: "short", hour: "2-digit", minute: "2-digit" }).format(new Date());
+  return trimMessage(`@[${sender}] Zeit ${weather.place}: ${time} (${weather.timezone})`);
+}
+
+function formatSunReply(sender, weather) {
+  const sunrise = weather.daily?.sunrise?.[0]?.slice(11, 16);
+  const sunset = weather.daily?.sunset?.[0]?.slice(11, 16);
+  if (!sunrise || !sunset) throw new Error("Keine Sonnendaten erhalten.");
+  return trimMessage(`@[${sender}] Sonne ${weather.place}: Aufgang ${sunrise}, Untergang ${sunset}`);
 }
 
 function weatherCodeLabel(code) {
@@ -2320,6 +2408,218 @@ function normalizeFutureTimestamp(epoch) {
 function formatTime(epoch) {
   if (!epoch) return "-";
   return new Date(epoch * 1000).toLocaleString();
+}
+
+function formatExactTime(epoch) {
+  return epoch ? new Date(epoch * 1000).toLocaleString("de-DE") : "Kein Zeitstempel";
+}
+
+function formatRelativeTime(epoch) {
+  if (!epoch) return "-";
+  const seconds = Math.round(epoch - Date.now() / 1000);
+  const formatter = new Intl.RelativeTimeFormat("de-DE", { numeric: "auto" });
+  if (Math.abs(seconds) < 60) return formatter.format(seconds, "second");
+  const minutes = Math.round(seconds / 60);
+  if (Math.abs(minutes) < 60) return formatter.format(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return formatter.format(hours, "hour");
+  const days = Math.round(hours / 24);
+  if (Math.abs(days) < 7) return formatter.format(days, "day");
+  return formatTime(epoch);
+}
+
+function renderTime(epoch) {
+  return `<time datetime="${epoch ? new Date(epoch * 1000).toISOString() : ""}" title="${escapeHtml(formatExactTime(epoch))}">${escapeHtml(formatRelativeTime(epoch))}</time>`;
+}
+
+function loadFavoriteContacts() {
+  try {
+    const values = JSON.parse(localStorage.getItem("meshcore-dashboard-favorite-contacts") || "[]");
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function toggleFavoriteContact(key) {
+  if (state.favoriteContacts.has(key)) state.favoriteContacts.delete(key);
+  else state.favoriteContacts.add(key);
+  try {
+    localStorage.setItem("meshcore-dashboard-favorite-contacts", JSON.stringify([...state.favoriteContacts]));
+  } catch {}
+  renderContacts();
+}
+
+function hasValidPosition(item) {
+  if (!item || (!item.lat && !item.lon)) return false;
+  const lat = item.lat / 1e6;
+  const lon = item.lon / 1e6;
+  return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
+
+function renderNetworkOverview() {
+  renderNetworkMap();
+  renderRouteOverview();
+  renderRangeStats();
+  renderPacketDiagnostics();
+}
+
+function renderNetworkMap() {
+  const contacts = [...state.contacts.values()].filter(hasValidPosition);
+  const self = hasValidPosition({ lat: state.selfLat, lon: state.selfLon })
+    ? { name: state.selfName || "Eigener Node", lat: state.selfLat, lon: state.selfLon, self: true }
+    : null;
+  const nodes = self ? [self, ...contacts] : contacts;
+  el.mappedContactCount.textContent = `${contacts.length} Position${contacts.length === 1 ? "" : "en"}`;
+  if (!nodes.length) {
+    el.networkMap.className = "network-map empty";
+    el.networkMap.textContent = "Noch keine Kontakte mit Position.";
+    return;
+  }
+  const lats = nodes.map((node) => node.lat / 1e6);
+  const lons = nodes.map((node) => node.lon / 1e6);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const latSpan = Math.max(maxLat - minLat, 0.01);
+  const lonSpan = Math.max(maxLon - minLon, 0.01);
+  el.networkMap.className = "network-map";
+  el.networkMap.innerHTML = nodes.map((node) => {
+    const lat = node.lat / 1e6;
+    const lon = node.lon / 1e6;
+    const top = 8 + ((maxLat - lat) / latSpan) * 84;
+    const left = 8 + ((lon - minLon) / lonSpan) * 84;
+    const typeClass = node.self ? " self" : node.type === 2 ? " repeater" : "";
+    const url = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=15/${lat}/${lon}`;
+    return `<a class="map-node${typeClass}" style="left:${left.toFixed(2)}%;top:${top.toFixed(2)}%" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(node.name)}: ${lat.toFixed(5)}, ${lon.toFixed(5)}" aria-label="${escapeHtml(node.name)} auf OpenStreetMap"></a>`;
+  }).join("");
+}
+
+function renderRouteOverview() {
+  const contacts = [...state.contacts.values()].sort((a, b) => ((a.outPathLenRaw ?? 255) & 0x3f) - ((b.outPathLenRaw ?? 255) & 0x3f));
+  if (!contacts.length) {
+    el.routeOverview.className = "network-list empty";
+    el.routeOverview.textContent = "Noch keine Routendaten.";
+    return;
+  }
+  el.routeOverview.className = "network-list";
+  el.routeOverview.innerHTML = contacts.map((contact) => {
+    const path = formatPathHashes(contact.outPathLenRaw, contact.outPathRaw);
+    const detail = path.hashes.length ? path.hashes.map(formatRepeaterHash).join(" -> ") : formatContactRoute(contact.outPathLen);
+    return `<div class="route-row"><strong>${escapeHtml(contact.name)}</strong><span class="meta">${escapeHtml(detail)}</span></div>`;
+  }).join("");
+}
+
+function renderRangeStats() {
+  const messages = state.messages.filter((message) => !message.outgoing && (message.snr != null || message.rssi != null));
+  const snrValues = messages.map((message) => Number(message.snr)).filter(Number.isFinite);
+  const rssiValues = messages.map((message) => Number(message.rssi)).filter(Number.isFinite);
+  const hopValues = state.messages.map((message) => message.pathLen == null ? null : (message.pathLen === 0xff ? 0 : message.pathLen & 0x3f)).filter(Number.isFinite);
+  const distances = hasValidPosition({ lat: state.selfLat, lon: state.selfLon })
+    ? [...state.contacts.values()].filter(hasValidPosition).map((contact) => ({ name: contact.name, distance: distanceKm(state.selfLat, state.selfLon, contact.lat, contact.lon) }))
+    : [];
+  const farthest = distances.sort((a, b) => b.distance - a.distance)[0];
+  if (!snrValues.length && !rssiValues.length && !hopValues.length && !farthest) {
+    el.rangeStats.className = "stat-grid empty";
+    el.rangeStats.textContent = "Noch keine Funkdaten.";
+    return;
+  }
+  const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const stats = [
+    ["Weitester Node", farthest ? `${farthest.name} (${formatNumber(farthest.distance, 1)} km)` : "-"],
+    ["Mittlere SNR", snrValues.length ? `${formatNumber(average(snrValues), 1)} dB` : "-"],
+    ["Mittlere RSSI", rssiValues.length ? `${formatNumber(average(rssiValues), 0)} dBm` : "-"],
+    ["Maximale Hops", hopValues.length ? String(Math.max(...hopValues)) : "-"],
+  ];
+  el.rangeStats.className = "stat-grid";
+  el.rangeStats.innerHTML = stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+}
+
+function distanceKm(latA, lonA, latB, lonB) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const a1 = radians(latA / 1e6);
+  const a2 = radians(latB / 1e6);
+  const deltaLat = radians((latB - latA) / 1e6);
+  const deltaLon = radians((lonB - lonA) / 1e6);
+  const value = Math.sin(deltaLat / 2) ** 2 + Math.cos(a1) * Math.cos(a2) * Math.sin(deltaLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function recordPacket(code) {
+  state.packetStats.total += 1;
+  state.packetStats.byType.set(code, (state.packetStats.byType.get(code) || 0) + 1);
+}
+
+function renderPacketDiagnostics() {
+  const topType = [...state.packetStats.byType.entries()].sort((a, b) => b[1] - a[1])[0];
+  const stats = [
+    ["RX gesamt", String(state.packetStats.total)],
+    ["Fehler", String(state.packetStats.errors)],
+    ["Unbekannt", String(state.packetStats.unknown)],
+    ["Haeufigster Typ", topType ? `${packetName(topType[0])} (${topType[1]})` : "-"],
+  ];
+  el.packetDiagnostics.innerHTML = stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+}
+
+function exportConfiguration() {
+  const configuration = {
+    format: "meshcore-dashboard-config",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      theme: loadTheme(),
+      chatDensity: loadChatDensity(),
+      weatherEnabled: state.weatherEnabled,
+      autoPongEnabled: state.autoPongEnabled,
+      autoPongPostalCode: state.autoPongPostalCode,
+      quickReplyRules: state.quickReplyRules,
+      favoriteContacts: [...state.favoriteContacts],
+    },
+  };
+  const blob = new Blob([JSON.stringify(configuration, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `meshcore-dashboard-config-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showActionNotice("Konfiguration exportiert.");
+}
+
+async function importConfiguration(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (parsed?.format !== "meshcore-dashboard-config" || !parsed.settings) throw new Error("Unbekanntes Format");
+    const settings = parsed.settings;
+    if (settings.theme === "default" || settings.theme === "mono") localStorage.setItem("meshcore-dashboard-theme", settings.theme);
+    if (["compact", "comfortable"].includes(settings.chatDensity)) localStorage.setItem("meshcore-dashboard-chat-density", settings.chatDensity);
+    localStorage.setItem("meshcore-dashboard-weather-replies", String(Boolean(settings.weatherEnabled)));
+    localStorage.setItem("meshcore-dashboard-auto-pong", String(Boolean(settings.autoPongEnabled)));
+    if (typeof settings.autoPongPostalCode === "string") localStorage.setItem("meshcore-dashboard-auto-pong-postal-code", settings.autoPongPostalCode);
+    if (Array.isArray(settings.quickReplyRules)) localStorage.setItem("meshcore-dashboard-quick-reply-rules", JSON.stringify(settings.quickReplyRules));
+    if (Array.isArray(settings.favoriteContacts)) localStorage.setItem("meshcore-dashboard-favorite-contacts", JSON.stringify(settings.favoriteContacts));
+    showActionNotice("Konfiguration importiert. Seite wird neu geladen.");
+    setTimeout(() => location.reload(), 700);
+  } catch (error) {
+    showActionNotice(`Import fehlgeschlagen: ${error.message}`, "error");
+  }
+}
+
+async function installDashboard() {
+  if (!state.installPrompt) return;
+  state.installPrompt.prompt();
+  await state.installPrompt.userChoice;
+  state.installPrompt = null;
+  el.installAppBtn.hidden = true;
+}
+
+function registerServiceWorker() {
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    navigator.serviceWorker.register("service-worker.js").catch((error) => log(`Offline-Modus nicht verfuegbar: ${error.message}`, "error"));
+  }
 }
 
 function escapeHtml(value) {

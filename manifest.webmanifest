@@ -1,0 +1,18 @@
+{
+  "name": "MeshCore Dashboard",
+  "short_name": "MeshCore",
+  "description": "Lokales Dashboard fuer einen MeshCore USB- oder Bluetooth-Companion.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#111414",
+  "theme_color": "#111414",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
