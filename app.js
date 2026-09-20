@@ -99,6 +99,10 @@ const state = {
   selfLat: null,
   selfLon: null,
   installPrompt: null,
+  networkMap: null,
+  networkMarkerLayer: null,
+  networkMapBounds: null,
+  networkMapSignature: "",
   dmTarget: null,
   unreadChannels: new Map(),
   ackResults: new Map(),
@@ -173,6 +177,7 @@ const el = {
   messageDirectionFilter: document.querySelector("#messageDirectionFilter"),
   messageKindFilter: document.querySelector("#messageKindFilter"),
   networkMap: document.querySelector("#networkMap"),
+  fitNetworkMapBtn: document.querySelector("#fitNetworkMapBtn"),
   mappedContactCount: document.querySelector("#mappedContactCount"),
   routeOverview: document.querySelector("#routeOverview"),
   rangeStats: document.querySelector("#rangeStats"),
@@ -323,6 +328,7 @@ el.exportConfigBtn.addEventListener("click", exportConfiguration);
 el.importConfigBtn.addEventListener("click", () => el.importConfigInput.click());
 el.importConfigInput.addEventListener("change", importConfiguration);
 el.installAppBtn.addEventListener("click", installDashboard);
+el.fitNetworkMapBtn.addEventListener("click", fitNetworkMap);
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   state.installPrompt = event;
@@ -1624,6 +1630,9 @@ function setPanelCollapsed(panel, collapsed, panelName = panel.querySelector(".p
   button.setAttribute("aria-expanded", String(!collapsed));
   button.setAttribute("aria-label", `${panelName} ${collapsed ? "ausklappen" : "einklappen"}`);
   button.title = `${panelName} ${collapsed ? "ausklappen" : "einklappen"}`;
+  if (!collapsed && panel.dataset.panelId === "network") {
+    setTimeout(() => state.networkMap?.invalidateSize(), 0);
+  }
 }
 
 function loadCollapsedPanels() {
@@ -2472,28 +2481,70 @@ function renderNetworkMap() {
   const nodes = self ? [self, ...contacts] : contacts;
   el.mappedContactCount.textContent = `${contacts.length} Position${contacts.length === 1 ? "" : "en"}`;
   if (!nodes.length) {
-    el.networkMap.className = "network-map empty";
-    el.networkMap.textContent = "Noch keine Kontakte mit Position.";
+    el.fitNetworkMapBtn.disabled = true;
+    if (!state.networkMap) {
+      el.networkMap.className = "network-map empty";
+      el.networkMap.textContent = "Noch keine Kontakte mit Position.";
+    } else if (state.networkMarkerLayer) {
+      state.networkMarkerLayer.clearLayers();
+    }
     return;
   }
-  const lats = nodes.map((node) => node.lat / 1e6);
-  const lons = nodes.map((node) => node.lon / 1e6);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLon = Math.min(...lons);
-  const maxLon = Math.max(...lons);
-  const latSpan = Math.max(maxLat - minLat, 0.01);
-  const lonSpan = Math.max(maxLon - minLon, 0.01);
+  if (!window.L) {
+    el.networkMap.className = "network-map empty";
+    el.networkMap.textContent = "Kartenbibliothek konnte nicht geladen werden.";
+    return;
+  }
+
   el.networkMap.className = "network-map";
-  el.networkMap.innerHTML = nodes.map((node) => {
+  if (!state.networkMap) {
+    el.networkMap.textContent = "";
+    state.networkMap = L.map(el.networkMap, { zoomControl: true, scrollWheelZoom: true }).setView([51, 10], 6);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(state.networkMap);
+    state.networkMarkerLayer = typeof L.markerClusterGroup === "function"
+      ? L.markerClusterGroup({ showCoverageOnHover: false, spiderfyOnMaxZoom: true, maxClusterRadius: 42 })
+      : L.layerGroup();
+    state.networkMarkerLayer.addTo(state.networkMap);
+  }
+
+  state.networkMarkerLayer.clearLayers();
+  const bounds = [];
+  for (const node of nodes) {
     const lat = node.lat / 1e6;
     const lon = node.lon / 1e6;
-    const top = 8 + ((maxLat - lat) / latSpan) * 84;
-    const left = 8 + ((lon - minLon) / lonSpan) * 84;
-    const typeClass = node.self ? " self" : node.type === 2 ? " repeater" : "";
-    const url = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=15/${lat}/${lon}`;
-    return `<a class="map-node${typeClass}" style="left:${left.toFixed(2)}%;top:${top.toFixed(2)}%" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(node.name)}: ${lat.toFixed(5)}, ${lon.toFixed(5)}" aria-label="${escapeHtml(node.name)} auf OpenStreetMap"></a>`;
-  }).join("");
+    const typeClass = node.self ? "self" : node.type === 2 ? "repeater" : "client";
+    const marker = L.marker([lat, lon], {
+      title: node.name,
+      icon: L.divIcon({ className: `mesh-map-marker ${typeClass}`, iconSize: [18, 18], iconAnchor: [9, 9] }),
+    });
+    const signal = node.lastSnr == null ? "Kein Signalwert" : `SNR ${node.lastSnr.toFixed(1)} dB`;
+    const route = node.self ? "Eigener Node" : formatContactRoute(node.outPathLen);
+    marker.bindPopup(`<strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(TYPE_NAMES[node.type] || route)}</span><span>${escapeHtml(route)} | ${escapeHtml(signal)}</span><span>${lat.toFixed(5)}, ${lon.toFixed(5)}</span>`);
+    marker.bindTooltip(node.name, { direction: "top", offset: [0, -10] });
+    state.networkMarkerLayer.addLayer(marker);
+    bounds.push([lat, lon]);
+  }
+
+  state.networkMapBounds = L.latLngBounds(bounds);
+  el.fitNetworkMapBtn.disabled = false;
+  const signature = nodes.map((node) => `${node.key || "self"}:${node.lat}:${node.lon}`).sort().join("|");
+  if (signature !== state.networkMapSignature) {
+    state.networkMapSignature = signature;
+    fitNetworkMap();
+  }
+  setTimeout(() => state.networkMap?.invalidateSize(), 0);
+}
+
+function fitNetworkMap() {
+  if (!state.networkMap || !state.networkMapBounds?.isValid()) return;
+  if (state.networkMapBounds.getNorthEast().equals(state.networkMapBounds.getSouthWest())) {
+    state.networkMap.setView(state.networkMapBounds.getCenter(), 12);
+    return;
+  }
+  state.networkMap.fitBounds(state.networkMapBounds, { padding: [32, 32], maxZoom: 13 });
 }
 
 function renderRouteOverview() {

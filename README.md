@@ -44,7 +44,7 @@ gemeinsam aktualisiert.
 - Wetteransage optional aktivieren: Im Kanal `#wetter` stehen `wetter <Ort>`, `wetter <Ort> heute`, `wetter <Ort> morgen`, `wetter <Ort> 3`, `regen <Ort>` und `wetter hilfe` zur Verfuegung
 - Dashboard-Konfiguration als JSON exportieren und importieren (ohne private Kanalschluessel)
 - Kontakte favorisieren sowie Nachrichten nach Text, Richtung und Typ filtern
-- Netzkarte, Routenansicht, Reichweitenstatistik und Paketdiagnose aus Live-Daten
+- Interaktive OpenStreetMap-Netzkarte mit Zoom, Clustering und Node-Details sowie Routenansicht, Reichweitenstatistik und Paketdiagnose aus Live-Daten
 - Informationsdienste `zeit <Ort>` und `sonne <Ort>` im Kanal `#wetter`
 - Als Progressive Web App installierbar und nach dem ersten Laden offline startbar
 - eigenes Advertisement per Button senden

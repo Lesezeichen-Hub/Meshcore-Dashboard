@@ -423,40 +423,69 @@ dd {
   text-transform: uppercase;
 }
 
+.network-section.map-section {
+  grid-column: 1 / -1;
+  border-right: 0;
+}
+
+.network-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.network-section-head h3 {
+  margin: 0;
+}
+
+.network-section-head button {
+  min-height: 32px;
+}
+
 .network-map {
-  position: relative;
-  min-height: 260px;
+  min-height: 460px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background-color: #17201d;
-  background-image: linear-gradient(rgba(87, 215, 160, 0.09) 1px, transparent 1px), linear-gradient(90deg, rgba(87, 215, 160, 0.09) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background: #17201d;
 }
 
-.map-node {
-  position: absolute;
+.network-map.empty {
   display: grid;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 3px solid var(--panel);
+  place-items: center;
+}
+
+.leaflet-container {
+  color: #17201d;
+  font-family: inherit;
+}
+
+.mesh-map-marker {
+  border: 3px solid #111414;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(87, 215, 160, 0.8);
 }
 
-.map-node.repeater {
+.mesh-map-marker.repeater {
   background: var(--accent-2);
-  box-shadow: 0 0 0 1px var(--accent-2);
+  box-shadow: 0 0 0 2px rgba(243, 201, 105, 0.8);
 }
 
-.map-node.self {
-  width: 22px;
-  height: 22px;
+.mesh-map-marker.self {
   background: var(--danger);
-  box-shadow: 0 0 0 1px var(--danger);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.8);
+}
+
+.leaflet-popup-content strong,
+.leaflet-popup-content span {
+  display: block;
+}
+
+.leaflet-popup-content span {
+  margin-top: 3px;
 }
 
 .network-list {
@@ -1120,6 +1149,10 @@ html[data-chat-density="compact"] .message-head button {
 
   .network-section {
     border-right: 0;
+  }
+
+  .network-map {
+    min-height: 360px;
   }
 
   .details > div {
