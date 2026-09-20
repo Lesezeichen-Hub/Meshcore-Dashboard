@@ -146,9 +146,10 @@ const state = {
   autoPongCooldowns: new Map(),
   autoPongQueue: [],
   autoPongTimer: null,
-  autoReconnect: loadBooleanSetting("meshcore-dashboard-auto-reconnect", true),
+  autoReconnect: loadBooleanSetting("meshcore-dashboard-auto-reconnect", false),
   intentionalDisconnect: false,
   reconnectTimer: null,
+  reconnectStableTimer: null,
   reconnectAttempts: 0,
   lastTransport: null,
   lastPacketAt: null,
@@ -276,6 +277,7 @@ if (!("serial" in navigator) && !("bluetooth" in navigator)) {
 }
 
 updateConnectionUi();
+if ("serial" in navigator) navigator.serial.addEventListener("disconnect", handleUsbDisconnected);
 el.connectBtn.addEventListener("click", connectUsb);
 el.bleConnectBtn.addEventListener("click", connectBluetooth);
 el.autoReconnectToggle.addEventListener("change", () => {
@@ -678,7 +680,7 @@ async function openUsbPort(port, reconnecting = false) {
     readLoop();
     await pause(500);
     await fullSync();
-    state.reconnectAttempts = 0;
+    markConnectionStableLater();
     await flushSendQueue();
 }
 
@@ -727,7 +729,7 @@ async function openBluetoothDevice(device) {
     log(`Bluetooth verbunden: ${device.name || "MeshCore-Gerät"}.`);
     await pause(500);
     await fullSync();
-    state.reconnectAttempts = 0;
+    markConnectionStableLater();
     await flushSendQueue();
 }
 
@@ -743,6 +745,7 @@ function handleBluetoothDisconnected() {
   if (state.transport !== "bluetooth") return;
   const device = state.bluetoothDevice;
   state.connected = false;
+  clearTimeout(state.reconnectStableTimer);
   state.transport = null;
   rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
   clearPendingPings();
@@ -764,6 +767,7 @@ function handleBluetoothDisconnected() {
 async function disconnect() {
   state.intentionalDisconnect = true;
   clearTimeout(state.reconnectTimer);
+  clearTimeout(state.reconnectStableTimer);
   const transport = state.transport;
   state.connected = false;
   state.transport = null;
@@ -1588,17 +1592,29 @@ async function reconnectFavoriteRooms() {
       setRoomStatus("error", `Wiederanmeldung bei ${contact.name} fehlgeschlagen: ${error.message}`);
     }
   }
-  if (state.connected && state.transport === "usb") {
-    const port = state.port;
-    state.connected = false;
-    state.transport = null;
-    try { state.writer?.releaseLock(); } catch {}
-    try { await port.close(); } catch {}
-    state.writer = null;
-    updateConnectionUi();
-    log("USB-Verbindung unerwartet beendet.", "error");
-    if (!state.intentionalDisconnect) scheduleReconnect("usb", port);
-  }
+}
+
+async function handleUsbDisconnected() {
+  if (!state.connected || state.transport !== "usb") return;
+  const port = state.port;
+  state.connected = false;
+  state.transport = null;
+  clearTimeout(state.reconnectStableTimer);
+  rejectPendingWaiters(new Error("USB-Verbindung getrennt."));
+  clearPendingPings();
+  if (state.roomSessions.size || state.pendingRoomLogin) setRoomStatus("error", "Room-Verbindung durch USB-Trennung beendet.");
+  state.roomSessions.clear();
+  state.pendingRoomLogin = null;
+  clearTimeout(state.roomLoginTimer);
+  state.roomLoginTimer = null;
+  failPendingMessages("USB-Verbindung getrennt.");
+  try { state.reader?.releaseLock(); } catch {}
+  try { state.writer?.releaseLock(); } catch {}
+  state.reader = null;
+  state.writer = null;
+  updateConnectionUi();
+  log("USB-Verbindung physisch getrennt.", "error");
+  if (!state.intentionalDisconnect) scheduleReconnect("usb", port);
 }
 
 function scheduleReconnect(transport, target) {
@@ -1621,6 +1637,13 @@ function scheduleReconnect(transport, target) {
       scheduleReconnect(transport, target);
     }
   }, delay);
+}
+
+function markConnectionStableLater() {
+  clearTimeout(state.reconnectStableTimer);
+  state.reconnectStableTimer = setTimeout(() => {
+    if (state.connected) state.reconnectAttempts = 0;
+  }, 30000);
 }
 
 function toggleRoomFavorite(key) {
