@@ -42,6 +42,10 @@
         <div>
           <span class="label">Status</span>
           <strong id="connectionState">Nicht verbunden</strong>
+          <label class="status-toggle" title="Nach einem unerwarteten Abbruch automatisch erneut verbinden">
+            <input id="autoReconnectToggle" type="checkbox">
+            <span>Auto-Reconnect</span>
+          </label>
         </div>
         <div>
           <span class="label">Node</span>
@@ -75,6 +79,10 @@
           <div class="panel-head">
             <h2>Kanäle</h2>
             <span id="channelCount" class="chip">0</span>
+            <button id="importChannelInviteBtn" type="button" class="secondary" disabled>Invite</button>
+            <button id="exportChannelsBtn" type="button" class="secondary" disabled>Backup</button>
+            <button id="importChannelsBtn" type="button" class="secondary" disabled>Restore</button>
+            <input id="importChannelsInput" type="file" accept="application/json,.json" hidden>
           </div>
           <div id="channels" class="list empty">Noch keine Kanäle synchronisiert.</div>
           <form id="channelForm" class="channel-form">
@@ -96,6 +104,7 @@
           </div>
           <div class="panel-toolbar">
             <input id="contactSearch" type="search" placeholder="Kontakt suchen..." aria-label="Kontakt suchen">
+            <button id="importContactCardBtn" type="button" class="secondary" disabled>Room-Kontakt importieren</button>
           </div>
           <div id="contacts" class="table empty">Noch keine Kontakte synchronisiert.</div>
         </article>
@@ -276,14 +285,26 @@
         <p id="roomLoginTarget" class="room-login-target"></p>
         <label class="field-label" for="roomPasswordInput">Passwort</label>
         <input id="roomPasswordInput" type="password" autocomplete="current-password" maxlength="15" placeholder="Leer lassen, falls keines gesetzt">
+        <label class="switch-control"><input id="rememberRoomPassword" type="checkbox"><span class="switch-track" aria-hidden="true"></span><span>Login lokal merken</span></label>
         <div class="dialog-actions">
           <button id="roomLoginSubmitBtn" type="submit">Beitreten</button>
         </div>
       </form>
     </dialog>
 
+    <dialog id="channelInviteDialog" class="settings-dialog" aria-labelledby="channelInviteTitle">
+      <div class="dialog-head">
+        <h2 id="channelInviteTitle">Kanal-Invite</h2>
+        <button id="closeChannelInviteBtn" type="button" class="secondary dialog-close" aria-label="Dialog schliessen" title="Schliessen">&times;</button>
+      </div>
+      <div id="channelQrCode" class="channel-qr"></div>
+      <textarea id="channelInviteText" class="invite-text" rows="4" readonly></textarea>
+      <div class="dialog-actions invite-actions"><button id="copyChannelInviteBtn" type="button">Invite kopieren</button></div>
+    </dialog>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

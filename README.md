@@ -52,7 +52,10 @@ gemeinsam aktualisiert.
 - eigenes Advertisement per Button senden
 - Verschluesselten privaten Kanaelen per 16-Byte-Secret (Hex oder Base64) beitreten oder neue private Kanaele erzeugen
 - Kanaele aus nicht reservierten Slots wieder vom Companion entfernen
-- Bekannten Room-Servern mit optionalem Passwort beitreten und die Room-Unterhaltung als Direktchat oeffnen
-- Dauerhaften Room-Login-Status mit Erfolg, Fehler oder Timeout sowie benanntem Room-Tab anzeigen
+- Kanal-Invites als offiziellen MeshCore-QR/Link teilen und importieren, Secrets maskieren sowie Kanaele verschieben, umbenennen, sichern und wiederherstellen
+- Mehreren Room-Servern gleichzeitig mit optionalem Passwort beitreten, eigene Tabs und ungelesene Nachrichten je Room nutzen und Rooms wieder verlassen
+- Room-Favoriten automatisch wieder anmelden, Logins optional lokal merken und Room-Kontakte aus modernen QR-Links oder klassischen Business Cards importieren
+- Dauerhaften Room-Login-Status mit Erfolg, Fehler oder Timeout sowie Admin-Kennzeichnung anzeigen
+- Automatische USB-/Bluetooth-Wiederverbindung, persistente Sendewarteschlange, Verbindungs-Watchdog und verstaendliche Firmware-Fehlertexte
 
 Hinweis: Web Serial und Web Bluetooth sind in Firefox/Safari nicht verfuegbar. Nutze fuer USB die `companion_radio_usb`- und fuer Bluetooth die Companion-BLE-Firmware, jeweils nicht im KISS-Modus.

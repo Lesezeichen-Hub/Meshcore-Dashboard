@@ -17,7 +17,10 @@ const CMD = {
   DEVICE_QUERY: 0x16,
   GET_CHANNEL: 0x1f,
   SET_CHANNEL: 0x20,
+  ADD_UPDATE_CONTACT: 0x09,
   SEND_LOGIN: 0x1a,
+  LOGOUT: 0x1d,
+  IMPORT_CONTACT: 0x12,
 };
 
 const RESP = {
@@ -70,6 +73,10 @@ const PING_ACK_TIMEOUT_MIN_MS = 30000;
 const PING_ACK_TIMEOUT_MAX_MS = 120000;
 const PING_ACK_TIMEOUT_BUFFER_MS = 10000;
 const AUTO_PONG_COOLDOWN_MS = 15000;
+const RECONNECT_MAX_ATTEMPTS = 8;
+const STORAGE_SCHEMA_VERSION = 2;
+
+migrateStorage();
 
 const state = {
   port: null,
@@ -87,6 +94,7 @@ const state = {
   contactOrder: new Map(),
   contactSequence: 0,
   channels: new Map(),
+  revealedChannelSecrets: new Set(),
   messages: loadStoredMessages(),
   latestContactsSince: 0,
   waiters: [],
@@ -111,7 +119,9 @@ const state = {
   networkHeatLayer: null,
   networkMapBounds: null,
   networkMapSignature: "",
-  roomSessions: new Set(),
+  roomSessions: new Map(),
+  roomFavorites: loadRoomFavorites(),
+  roomCredentials: loadRoomCredentials(),
   pendingRoomLogin: null,
   roomLoginTimer: null,
   roomStatus: null,
@@ -136,6 +146,15 @@ const state = {
   autoPongCooldowns: new Map(),
   autoPongQueue: [],
   autoPongTimer: null,
+  autoReconnect: loadBooleanSetting("meshcore-dashboard-auto-reconnect", true),
+  intentionalDisconnect: false,
+  reconnectTimer: null,
+  reconnectAttempts: 0,
+  lastTransport: null,
+  lastPacketAt: null,
+  sendQueue: loadSendQueue(),
+  flushingQueue: false,
+  protocolVersion: null,
 };
 
 const el = {
@@ -146,6 +165,7 @@ const el = {
   advertBtn: document.querySelector("#advertBtn"),
   disconnectBtn: document.querySelector("#disconnectBtn"),
   connectionState: document.querySelector("#connectionState"),
+  autoReconnectToggle: document.querySelector("#autoReconnectToggle"),
   nodeName: document.querySelector("#nodeName"),
   radioSummary: document.querySelector("#radioSummary"),
   batterySummary: document.querySelector("#batterySummary"),
@@ -216,12 +236,24 @@ const el = {
   roomPasswordInput: document.querySelector("#roomPasswordInput"),
   roomLoginSubmitBtn: document.querySelector("#roomLoginSubmitBtn"),
   closeRoomLoginBtn: document.querySelector("#closeRoomLoginBtn"),
+  rememberRoomPassword: document.querySelector("#rememberRoomPassword"),
   roomSessionStatus: document.querySelector("#roomSessionStatus"),
+  importChannelInviteBtn: document.querySelector("#importChannelInviteBtn"),
+  exportChannelsBtn: document.querySelector("#exportChannelsBtn"),
+  importChannelsBtn: document.querySelector("#importChannelsBtn"),
+  importChannelsInput: document.querySelector("#importChannelsInput"),
+  channelInviteDialog: document.querySelector("#channelInviteDialog"),
+  closeChannelInviteBtn: document.querySelector("#closeChannelInviteBtn"),
+  channelInviteText: document.querySelector("#channelInviteText"),
+  channelQrCode: document.querySelector("#channelQrCode"),
+  copyChannelInviteBtn: document.querySelector("#copyChannelInviteBtn"),
+  importContactCardBtn: document.querySelector("#importContactCardBtn"),
 };
 
 applyTheme(loadTheme());
 el.autoPongToggle.checked = state.autoPongEnabled;
 el.weatherToggle.checked = state.weatherEnabled;
+el.autoReconnectToggle.checked = state.autoReconnect;
 applyChatDensity(loadChatDensity());
 initializeCollapsiblePanels();
 renderNetworkOverview();
@@ -230,6 +262,7 @@ registerServiceWorker();
 setInterval(() => {
   renderContacts();
   renderMessages();
+  updateConnectionUi();
 }, 60000);
 
 if (!("serial" in navigator) && !("bluetooth" in navigator)) {
@@ -242,8 +275,16 @@ if (!("serial" in navigator) && !("bluetooth" in navigator)) {
   el.supportHint.textContent = "Bluetooth ist in diesem Seitenkontext nicht verfügbar; USB ist verfügbar.";
 }
 
+updateConnectionUi();
 el.connectBtn.addEventListener("click", connectUsb);
 el.bleConnectBtn.addEventListener("click", connectBluetooth);
+el.autoReconnectToggle.addEventListener("change", () => {
+  state.autoReconnect = el.autoReconnectToggle.checked;
+  localStorage.setItem("meshcore-dashboard-auto-reconnect", String(state.autoReconnect));
+  if (!state.autoReconnect) clearTimeout(state.reconnectTimer);
+  showActionNotice(`Auto-Reconnect ${state.autoReconnect ? "aktiviert" : "deaktiviert"}.`);
+});
+el.importContactCardBtn.addEventListener("click", importContactCard);
 el.themeToggle.addEventListener("click", () => {
   const theme = document.documentElement.dataset.theme === "mono" ? "default" : "mono";
   applyTheme(theme);
@@ -391,7 +432,11 @@ el.channelTabs.addEventListener("click", (event) => {
   const tab = event.target.closest("button[data-channel-index]");
   if (!tab) return;
   state.activeChannel = tab.dataset.channelIndex;
-  if (state.activeChannel !== "all" && state.activeChannel !== "dm") {
+  if (state.activeChannel.startsWith("room:")) {
+    state.unreadChannels.delete(state.activeChannel);
+    state.dmTarget = state.roomSessions.get(state.activeChannel.slice(5))?.key || null;
+    renderChannels();
+  } else if (state.activeChannel !== "all" && state.activeChannel !== "dm") {
     el.channelSelect.value = String(state.activeChannel);
     state.unreadChannels.delete(String(state.activeChannel));
     state.dmTarget = null;
@@ -415,6 +460,15 @@ el.channelTabs.addEventListener("click", (event) => {
 el.channelSelect.addEventListener("change", () => {
   const next = el.channelSelect.value;
   if (next) {
+    if (next.startsWith("room:")) {
+      state.activeChannel = next;
+      state.dmTarget = state.roomSessions.get(next.slice(5))?.key || null;
+      state.unreadChannels.delete(next);
+      updateMessageInputPlaceholder();
+      renderMessages();
+      renderChannelTabs();
+      return;
+    }
     if (next === "dm") {
       state.activeChannel = "dm";
       updateMessageInputPlaceholder();
@@ -438,7 +492,11 @@ el.sendForm.addEventListener("submit", async (event) => {
   const text = el.messageInput.value.trim();
   if (!text) return;
   try {
-    if (state.activeChannel === "dm" && state.dmTarget) {
+    if (state.activeChannel.startsWith("room:")) {
+      const session = state.roomSessions.get(state.activeChannel.slice(5));
+      if (!session) throw new Error("Room ist nicht verbunden.");
+      await sendDirectMessage(session.key, text);
+    } else if (state.activeChannel === "dm" && state.dmTarget) {
       await sendDirectMessage(state.dmTarget, text);
     } else {
       const channel = Number(el.channelSelect.value || 0);
@@ -451,13 +509,56 @@ el.sendForm.addEventListener("submit", async (event) => {
 });
 el.channelForm.addEventListener("submit", createChannel);
 el.channels.addEventListener("click", (event) => {
+  const revealButton = event.target.closest("button[data-reveal-channel]");
+  if (revealButton) {
+    const index = Number(revealButton.dataset.revealChannel);
+    if (state.revealedChannelSecrets.has(index)) state.revealedChannelSecrets.delete(index);
+    else state.revealedChannelSecrets.add(index);
+    renderChannels();
+    return;
+  }
+  const inviteButton = event.target.closest("button[data-channel-invite]");
+  if (inviteButton) {
+    showChannelInvite(Number(inviteButton.dataset.channelInvite));
+    return;
+  }
+  const editButton = event.target.closest("button[data-edit-channel]");
+  if (editButton) {
+    editChannel(Number(editButton.dataset.editChannel));
+    return;
+  }
   const removeButton = event.target.closest("button[data-remove-channel]");
   if (removeButton) removeChannel(Number(removeButton.dataset.removeChannel));
+});
+el.importChannelInviteBtn.addEventListener("click", importChannelInvite);
+el.exportChannelsBtn.addEventListener("click", exportChannelsBackup);
+el.importChannelsBtn.addEventListener("click", () => el.importChannelsInput.click());
+el.importChannelsInput.addEventListener("change", importChannelsBackup);
+el.closeChannelInviteBtn.addEventListener("click", () => el.channelInviteDialog.close());
+el.copyChannelInviteBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(el.channelInviteText.value);
+  showActionNotice("Kanal-Invite kopiert.");
 });
 el.channelTypeSelect.addEventListener("change", updateChannelSecretField);
 el.roomLoginForm.addEventListener("submit", loginToRoomServer);
 el.closeRoomLoginBtn.addEventListener("click", () => el.roomLoginDialog.close());
 el.contacts.addEventListener("click", (event) => {
+  const roomFavoriteBtn = event.target.closest("button[data-room-favorite]");
+  if (roomFavoriteBtn) {
+    toggleRoomFavorite(roomFavoriteBtn.dataset.roomFavorite);
+    return;
+  }
+  const roomOpenBtn = event.target.closest("button[data-room-open]");
+  if (roomOpenBtn) {
+    const contact = state.contacts.get(roomOpenBtn.dataset.roomOpen);
+    if (contact) openRoomConversation(contact);
+    return;
+  }
+  const roomLogoutBtn = event.target.closest("button[data-room-logout]");
+  if (roomLogoutBtn) {
+    leaveRoomServer(roomLogoutBtn.dataset.roomLogout);
+    return;
+  }
   const roomBtn = event.target.closest("button[data-room-login]");
   if (roomBtn) {
     openRoomLogin(roomBtn.dataset.roomLogin);
@@ -553,10 +654,21 @@ el.messages.addEventListener("click", (event) => {
 
 async function connectUsb() {
   try {
-    state.port = await navigator.serial.requestPort();
+    state.intentionalDisconnect = false;
+    const port = await navigator.serial.requestPort();
+    await openUsbPort(port);
+  } catch (error) {
+    log(`Verbindung fehlgeschlagen: ${error.message}`, "error");
+    await disconnect();
+  }
+}
+
+async function openUsbPort(port, reconnecting = false) {
+    state.port = port;
     await state.port.open({ baudRate: BAUD_RATE, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" });
     state.writer = state.port.writable.getWriter();
     state.transport = "usb";
+    state.lastTransport = "usb";
     state.connected = true;
     updateConnectionUi();
     const portInfo = state.port.getInfo();
@@ -566,10 +678,8 @@ async function connectUsb() {
     readLoop();
     await pause(500);
     await fullSync();
-  } catch (error) {
-    log(`Verbindung fehlgeschlagen: ${error.message}`, "error");
-    await disconnect();
-  }
+    state.reconnectAttempts = 0;
+    await flushSendQueue();
 }
 
 async function connectBluetooth() {
@@ -584,11 +694,21 @@ async function connectBluetooth() {
     return;
   }
   try {
+    state.intentionalDisconnect = false;
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [BLE_SERVICE_UUID] }],
       optionalServices: [BLE_SERVICE_UUID],
     });
+    await openBluetoothDevice(device);
+  } catch (error) {
+    if (error.name !== "NotFoundError") log(`Bluetooth-Verbindung fehlgeschlagen: ${error.message}`, "error");
+    await disconnect();
+  }
+}
+
+async function openBluetoothDevice(device) {
     state.bluetoothDevice = device;
+    device.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
     device.addEventListener("gattserverdisconnected", handleBluetoothDisconnected);
     const server = await device.gatt.connect();
     state.bluetoothServer = server;
@@ -601,17 +721,14 @@ async function connectBluetooth() {
     state.bluetoothRx = rx;
     state.bluetoothTx = tx;
     state.transport = "bluetooth";
+    state.lastTransport = "bluetooth";
     state.connected = true;
     updateConnectionUi();
     log(`Bluetooth verbunden: ${device.name || "MeshCore-Gerät"}.`);
     await pause(500);
     await fullSync();
-  } catch (error) {
-    if (error.name !== "NotFoundError") {
-      log(`Bluetooth-Verbindung fehlgeschlagen: ${error.message}`, "error");
-    }
-    await disconnect();
-  }
+    state.reconnectAttempts = 0;
+    await flushSendQueue();
 }
 
 function handleBluetoothNotification(event) {
@@ -624,6 +741,7 @@ function handleBluetoothNotification(event) {
 
 function handleBluetoothDisconnected() {
   if (state.transport !== "bluetooth") return;
+  const device = state.bluetoothDevice;
   state.connected = false;
   state.transport = null;
   rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
@@ -635,16 +753,17 @@ function handleBluetoothDisconnected() {
   state.roomLoginTimer = null;
   failPendingMessages("Bluetooth-Verbindung getrennt.");
   state.bluetoothTx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
-  state.bluetoothDevice?.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
-  state.bluetoothDevice = null;
   state.bluetoothServer = null;
   state.bluetoothRx = null;
   state.bluetoothTx = null;
   updateConnectionUi();
   log("Bluetooth-Verbindung wurde getrennt.", "error");
+  if (!state.intentionalDisconnect) scheduleReconnect("bluetooth", device);
 }
 
 async function disconnect() {
+  state.intentionalDisconnect = true;
+  clearTimeout(state.reconnectTimer);
   const transport = state.transport;
   state.connected = false;
   state.transport = null;
@@ -737,6 +856,7 @@ async function fullSync() {
       }
     }
     await drainMessages();
+    reconnectFavoriteRooms().catch((error) => log(`Room-Wiederanmeldung fehlgeschlagen: ${error.message}`, "error"));
     log("Synchronisierung abgeschlossen.");
   } catch (error) {
     log(`${error.message} Prüfe, ob das ausgewählte Gerät eine MeshCore Companion-Firmware nutzt.`, "error");
@@ -760,13 +880,24 @@ function buildDeviceTime() {
 }
 
 async function sendChannelMessage(channelIndex, text, existingMessage = null) {
-  if (!state.connected) throw new Error("Nicht verbunden.");
   const message = existingMessage || {
+    id: createMessageId(),
     kind: "out",
     channel: channelIndex,
     timestamp: Math.floor(Date.now() / 1000),
     text,
   };
+  message.id ||= createMessageId();
+  if (!state.connected) {
+    queueMessage({ id: message.id, type: "channel", channelIndex, text });
+    message.deliveryStatus = "queued";
+    message.delivery = "Warteschlange";
+    message.failureReason = null;
+    if (!existingMessage) addMessage(message);
+    else updateStoredMessage(message);
+    showActionNotice("Nachricht wird nach der Wiederverbindung gesendet.", "warn");
+    return message;
+  }
   prepareMessageForSend(message);
   if (!existingMessage) addMessage(message);
   else updateStoredMessage(message);
@@ -792,6 +923,7 @@ async function sendChannelMessage(channelIndex, text, existingMessage = null) {
   message.estimatedTimeout = detailedResponse ? readU32(response, 6) : null;
   message.deliveryStatus = ackCode ? "sent" : "confirmed";
   message.delivery = ackCode ? "Gesendet" : "Bestätigt";
+  dequeueMessage(message.id);
   updateStoredMessage(message);
   if (ackCode) {
     const earlyRoundTrip = state.ackResults.get(ackCode);
@@ -910,6 +1042,7 @@ async function removeChannel(index) {
   const channel = state.channels.get(index);
   if (!state.connected || index === 0 || !channel?.enabled) return;
   if (!confirm(`Kanal #${index} ${channel.name || ""} wirklich vom Companion entfernen?`)) return;
+  if (confirm("Kanal-Invite vor dem Entfernen als JSON sichern?")) exportSingleChannel(channel);
 
   const payload = new Uint8Array(50);
   payload[0] = CMD.SET_CHANNEL;
@@ -925,6 +1058,120 @@ async function removeChannel(index) {
   } catch (error) {
     showActionNotice(`Kanal konnte nicht entfernt werden: ${error.message}`, "error");
   }
+}
+
+function channelInviteValue(channel) {
+  return `meshcore://channel/add?name=${encodeURIComponent(channel.name)}&secret=${encodeURIComponent(channel.secret)}`;
+}
+
+function showChannelInvite(index) {
+  const channel = state.channels.get(index);
+  if (!channel?.enabled) return;
+  const invite = channelInviteValue(channel);
+  el.channelInviteText.value = invite;
+  el.channelQrCode.innerHTML = "";
+  if (window.QRCode) new QRCode(el.channelQrCode, { text: invite, width: 180, height: 180 });
+  el.channelInviteDialog.showModal();
+}
+
+async function importChannelInvite() {
+  if (!state.connected) return;
+  const invite = prompt("MeshCore-Kanal-Invite einfuegen:");
+  if (!invite) return;
+  try {
+    const url = new URL(invite.trim());
+    if (url.protocol !== "meshcore:" || url.hostname !== "channel" || url.pathname !== "/add") throw new Error("Unbekanntes Invite-Format.");
+    const name = url.searchParams.get("name")?.trim();
+    const secret = parseChannelSecret(url.searchParams.get("secret") || "");
+    if (!name) throw new Error("Kanalname fehlt.");
+    const freeIndex = findFreeChannelIndex();
+    if (freeIndex == null) throw new Error("Kein freier Kanalplatz vorhanden.");
+    await writeChannel(freeIndex, name, secret);
+    showActionNotice(`Kanal ${name} beigetreten.`);
+  } catch (error) {
+    showActionNotice(`Invite ungueltig: ${error.message}`, "error");
+  }
+}
+
+function findFreeChannelIndex() {
+  return Array.from({ length: Math.max(0, state.maxChannels - 1) }, (_, index) => index + 1).find((index) => !state.channels.get(index)?.enabled);
+}
+
+async function writeChannel(index, name, secret) {
+  const nameBytes = encodeText(name);
+  if (nameBytes.length > 32) throw new Error("Kanalname ist laenger als 32 UTF-8-Bytes.");
+  const payload = new Uint8Array(50);
+  payload[0] = CMD.SET_CHANNEL;
+  payload[1] = index;
+  payload.set(nameBytes, 2);
+  payload.set(secret, 34);
+  await sendAndWait(payload, [RESP.OK]);
+  await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
+}
+
+async function editChannel(index) {
+  const channel = state.channels.get(index);
+  if (!channel || index === 0) return;
+  const name = prompt("Neuer Kanalname:", channel.name);
+  if (!name) return;
+  const slotText = prompt(`Ziel-Slot (1-${state.maxChannels - 1}):`, String(index));
+  if (!slotText) return;
+  const targetIndex = Number(slotText);
+  if (!Number.isInteger(targetIndex) || targetIndex < 1 || targetIndex >= state.maxChannels) {
+    showActionNotice("Ungueltiger Kanal-Slot.", "error");
+    return;
+  }
+  if (targetIndex !== index && state.channels.get(targetIndex)?.enabled && !confirm(`Slot ${targetIndex} ist belegt und wird ueberschrieben. Fortfahren?`)) return;
+  try {
+    await writeChannel(targetIndex, name, hexToBytes(channel.secret));
+    if (targetIndex !== index) {
+      const clearPayload = new Uint8Array(50);
+      clearPayload[0] = CMD.SET_CHANNEL;
+      clearPayload[1] = index;
+      await sendAndWait(clearPayload, [RESP.OK]);
+      state.channels.set(index, { index, name: "", secret: "0".repeat(32), enabled: false });
+    }
+    renderChannels();
+    showActionNotice(`Kanal nach Slot ${targetIndex} gespeichert.`);
+  } catch (error) {
+    showActionNotice(`Kanal konnte nicht bearbeitet werden: ${error.message}`, "error");
+  }
+}
+
+function exportSingleChannel(channel) {
+  downloadJson(`meshcore-channel-${channel.index}.json`, { format: "meshcore-channel", version: 1, channel: { name: channel.name, secret: channel.secret } });
+}
+
+function exportChannelsBackup() {
+  const channels = [...state.channels.values()].filter((channel) => channel.enabled && channel.index !== 0).map(({ index, name, secret }) => ({ index, name, secret }));
+  downloadJson(`meshcore-channels-${new Date().toISOString().slice(0, 10)}.json`, { format: "meshcore-channel-backup", version: 1, sensitive: true, channels });
+  showActionNotice("Sensibles Kanal-Backup exportiert.");
+}
+
+async function importChannelsBackup(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file || !state.connected) return;
+  try {
+    const backup = JSON.parse(await file.text());
+    if (backup?.format !== "meshcore-channel-backup" || !Array.isArray(backup.channels)) throw new Error("Unbekanntes Backup-Format.");
+    for (const channel of backup.channels) {
+      if (!Number.isInteger(channel.index) || channel.index < 1 || channel.index >= state.maxChannels) continue;
+      await writeChannel(channel.index, String(channel.name || ""), parseChannelSecret(String(channel.secret || "")));
+    }
+    showActionNotice("Kanal-Backup wiederhergestellt.");
+  } catch (error) {
+    showActionNotice(`Restore fehlgeschlagen: ${error.message}`, "error");
+  }
+}
+
+function downloadJson(filename, value) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function rejectPendingWaiters(error) {
@@ -968,6 +1215,7 @@ function ingestBytes(bytes) {
 
 function handlePacket(data) {
   if (!data.length) return;
+  state.lastPacketAt = Date.now();
   const code = data[0];
   recordPacket(code, data);
   log(`RX ${packetName(code)} ${toHex(data)}`);
@@ -977,7 +1225,7 @@ function handlePacket(data) {
     const [waiter] = state.waiters.splice(waiterIndex, 1);
     clearTimeout(waiter.timer);
     if (code === RESP.ERROR) {
-      waiter.reject(new Error(`MeshCore meldet Fehlercode ${data[1] ?? "unbekannt"}.`));
+      waiter.reject(new Error(meshErrorLabel(data[1])));
     } else {
       waiter.resolve(data);
     }
@@ -1043,7 +1291,7 @@ function handlePacket(data) {
       break;
     case RESP.ERROR:
       state.packetStats.errors += 1;
-      log(`MeshCore Fehlercode: ${data[1] ?? "unbekannt"}`, "error");
+      log(meshErrorLabel(data[1]), "error");
       break;
     default:
       state.packetStats.unknown += 1;
@@ -1054,9 +1302,10 @@ function handlePacket(data) {
 
 async function sendDirectMessage(key, text, existingMessage = null) {
   const contact = state.contacts.get(key);
-  if (!contact || !state.connected) throw new Error("Kontakt nicht verfügbar oder nicht verbunden.");
+  if (!contact) throw new Error("Kontakt nicht verfügbar.");
 
   const message = existingMessage || {
+    id: createMessageId(),
     kind: "contact",
     outgoing: true,
     prefix: contact.prefix,
@@ -1065,6 +1314,17 @@ async function sendDirectMessage(key, text, existingMessage = null) {
     timestamp: Math.floor(Date.now() / 1000),
     text,
   };
+  message.id ||= createMessageId();
+  if (!state.connected) {
+    queueMessage({ id: message.id, type: "direct", key, text });
+    message.deliveryStatus = "queued";
+    message.delivery = "Warteschlange";
+    message.failureReason = null;
+    if (!existingMessage) addMessage(message);
+    else updateStoredMessage(message);
+    showActionNotice("Nachricht wird nach der Wiederverbindung gesendet.", "warn");
+    return message;
+  }
   prepareMessageForSend(message);
   if (!existingMessage) addMessage(message);
   else updateStoredMessage(message);
@@ -1090,6 +1350,7 @@ async function sendDirectMessage(key, text, existingMessage = null) {
   message.deliveryStatus = ackCode ? "sent" : "confirmed";
   message.delivery = ackCode ? "Gesendet" : "Bestätigt";
   message.sendResult = response[0] === RESP.SENT ? signedByte(response[1] ?? 0) : 0;
+  dequeueMessage(message.id);
   updateStoredMessage(message);
   if (ackCode) {
     const earlyRoundTrip = state.ackResults.get(ackCode);
@@ -1123,6 +1384,49 @@ function parseChannelSecret(value) {
   throw new Error("Das Kanal-Secret muss 32 Hex-Zeichen oder 16 Byte Base64 enthalten.");
 }
 
+async function importContactCard() {
+  if (!state.connected) return;
+  const value = prompt("MeshCore-Kontaktkarte (meshcore://...) einfügen:");
+  if (!value) return;
+  try {
+    const trimmed = value.trim();
+    const url = new URL(trimmed);
+    if (url.hostname === "contact" && url.pathname === "/add") {
+      const name = url.searchParams.get("name")?.trim();
+      const key = url.searchParams.get("public_key") || "";
+      const type = Number(url.searchParams.get("type"));
+      if (!name || !/^[0-9a-f]{64}$/i.test(key) || ![1, 2, 3, 4].includes(type)) throw new Error("Name, Public Key oder Kontakttyp sind ungültig.");
+      const payload = new Uint8Array(136);
+      payload[0] = CMD.ADD_UPDATE_CONTACT;
+      payload.set(hexToBytes(key), 1);
+      payload[33] = type;
+      payload.set(encodeText(name).slice(0, 31), 100);
+      await sendAndWait(payload, [RESP.OK]);
+    } else {
+      const hex = decodeURIComponent(trimmed.replace(/^meshcore:\/\//i, "")).replace(/\s+/g, "");
+      if (!/^[0-9a-f]+$/i.test(hex) || hex.length % 2 || hex.length < 64) throw new Error("Die Kontaktkarte enthält keine gültigen Kartendaten.");
+      await sendAndWait(Uint8Array.from([CMD.IMPORT_CONTACT, ...hexToBytes(hex)]), [RESP.OK]);
+    }
+    await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
+    showActionNotice("Room-Kontakt importiert.");
+  } catch (error) {
+    showActionNotice(`Import fehlgeschlagen: ${error.message}`, "error");
+  }
+}
+
+function meshErrorLabel(code) {
+  const descriptions = {
+    1: "Befehl nicht unterstützt",
+    2: "Eintrag nicht gefunden",
+    3: "Kontakt- oder Kanalspeicher voll",
+    4: "Gerät ist nicht im passenden Zustand",
+    5: "Dateisystemfehler",
+    6: "Ungültige Parameter",
+  };
+  const suffix = code == null ? "unbekannt" : code;
+  return `MeshCore-Fehler ${suffix}: ${descriptions[code] || "Das Gerät hat die Anfrage abgelehnt"}.`;
+}
+
 function openRoomLogin(key) {
   const contact = state.contacts.get(key);
   if (!contact || contact.type !== 3) return;
@@ -1132,7 +1436,8 @@ function openRoomLogin(key) {
   }
   state.pendingRoomLogin = { contact, awaitingResult: false };
   el.roomLoginTarget.textContent = `${contact.name} (${contact.prefix})`;
-  el.roomPasswordInput.value = "";
+  el.roomPasswordInput.value = state.roomCredentials[contact.key] || "";
+  el.rememberRoomPassword.checked = Object.hasOwn(state.roomCredentials, contact.key);
   el.roomLoginDialog.showModal();
   el.roomPasswordInput.focus();
 }
@@ -1148,6 +1453,9 @@ async function loginToRoomServer(event) {
     return;
   }
   el.roomPasswordInput.setCustomValidity("");
+  if (el.rememberRoomPassword.checked) state.roomCredentials[pending.contact.key] = el.roomPasswordInput.value;
+  else delete state.roomCredentials[pending.contact.key];
+  persistRoomCredentials();
   const payload = new Uint8Array(33 + password.length);
   payload[0] = CMD.SEND_LOGIN;
   payload.set(hexToBytes(pending.contact.key), 1);
@@ -1181,11 +1489,19 @@ function parseRoomLoginResult(data, success) {
   const contact = [...state.contacts.values()].find((item) => item.prefix === prefix) || pending?.contact;
   if (!contact) return;
   if (success) {
-    state.roomSessions.add(contact.prefix);
+    const automatic = Boolean(pending?.automatic);
+    const permissions = data[1] || 0;
+    state.roomSessions.set(contact.prefix, { key: contact.key, name: contact.name, admin: Boolean(permissions & 1) });
     state.pendingRoomLogin = null;
     setRoomStatus("success", `Verbunden mit Room ${contact.name}. Nachrichten erscheinen in diesem Room-Tab.`);
     showActionNotice(`Room ${contact.name} verbunden.`);
-    openRoomConversation(contact);
+    if (automatic) {
+      renderContacts();
+      renderChannels();
+      renderChannelTabs();
+    } else {
+      openRoomConversation(contact);
+    }
   } else {
     state.pendingRoomLogin = null;
     setRoomStatus("error", `Login bei ${contact.name} fehlgeschlagen oder Zeitlimit erreicht.`);
@@ -1201,8 +1517,123 @@ function setRoomStatus(status, text) {
   el.roomSessionStatus.textContent = text;
 }
 
+async function leaveRoomServer(key) {
+  const contact = state.contacts.get(key);
+  if (!contact || !state.roomSessions.has(contact.prefix)) return;
+  const payload = new Uint8Array(33);
+  payload[0] = CMD.LOGOUT;
+  payload.set(hexToBytes(contact.key), 1);
+  try {
+    await sendAndWait(payload, [RESP.OK], 5000);
+    state.roomSessions.delete(contact.prefix);
+    state.unreadChannels.delete(`room:${contact.prefix}`);
+    if (state.activeChannel === `room:${contact.prefix}`) state.activeChannel = "all";
+    setRoomStatus("success", `Room ${contact.name} verlassen.`);
+    renderContacts();
+    renderChannels();
+    renderMessages();
+  } catch (error) {
+    setRoomStatus("error", `Room ${contact.name} konnte nicht verlassen werden: ${error.message}`);
+  }
+}
+
+function loadRoomFavorites() {
+  try {
+    const values = JSON.parse(localStorage.getItem("meshcore-dashboard-room-favorites") || "[]");
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function loadRoomCredentials() {
+  try {
+    const values = JSON.parse(localStorage.getItem("meshcore-dashboard-room-credentials") || "{}");
+    return values && typeof values === "object" && !Array.isArray(values) ? values : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistRoomCredentials() {
+  try {
+    localStorage.setItem("meshcore-dashboard-room-credentials", JSON.stringify(state.roomCredentials));
+  } catch {}
+}
+
+async function reconnectFavoriteRooms() {
+  for (const key of state.roomFavorites) {
+    if (!state.connected) return;
+    const contact = state.contacts.get(key);
+    if (!contact || contact.type !== 3 || state.roomSessions.has(contact.prefix)) continue;
+    const passwordText = state.roomCredentials[key] || "";
+    const password = encodeText(passwordText);
+    if (password.length > 15) continue;
+    const pending = { contact, awaitingResult: true, automatic: true };
+    state.pendingRoomLogin = pending;
+    setRoomStatus("pending", `Wiederanmeldung bei ${contact.name} laeuft...`);
+    const payload = new Uint8Array(33 + password.length);
+    payload[0] = CMD.SEND_LOGIN;
+    payload.set(hexToBytes(contact.key), 1);
+    payload.set(password, 33);
+    try {
+      const response = await sendAndWait(payload, [RESP.SENT], 8000);
+      const waitMs = Math.min(120000, Math.max(10000, (readU32(response, 6) || 30000) + 5000));
+      clearTimeout(state.roomLoginTimer);
+      state.roomLoginTimer = setTimeout(() => parseRoomLoginResult(new Uint8Array(), false), waitMs);
+      const deadline = Date.now() + waitMs + 1000;
+      while (state.pendingRoomLogin === pending && Date.now() < deadline) await pause(250);
+    } catch (error) {
+      if (state.pendingRoomLogin === pending) state.pendingRoomLogin = null;
+      setRoomStatus("error", `Wiederanmeldung bei ${contact.name} fehlgeschlagen: ${error.message}`);
+    }
+  }
+  if (state.connected && state.transport === "usb") {
+    const port = state.port;
+    state.connected = false;
+    state.transport = null;
+    try { state.writer?.releaseLock(); } catch {}
+    try { await port.close(); } catch {}
+    state.writer = null;
+    updateConnectionUi();
+    log("USB-Verbindung unerwartet beendet.", "error");
+    if (!state.intentionalDisconnect) scheduleReconnect("usb", port);
+  }
+}
+
+function scheduleReconnect(transport, target) {
+  if (!state.autoReconnect || state.intentionalDisconnect || state.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) return;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectAttempts += 1;
+  const delay = Math.min(30000, 1500 * (2 ** (state.reconnectAttempts - 1)));
+  el.connectionState.textContent = `Wiederverbindung ${state.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`;
+  state.reconnectTimer = setTimeout(async () => {
+    try {
+      if (transport === "bluetooth" && target) await openBluetoothDevice(target);
+      else if (transport === "usb") {
+        const ports = "serial" in navigator ? await navigator.serial.getPorts() : [];
+        const port = ports.includes(target) ? target : ports[0];
+        if (!port) throw new Error("Kein freigegebenes USB-Gerät gefunden.");
+        await openUsbPort(port, true);
+      }
+    } catch (error) {
+      log(`Wiederverbindung fehlgeschlagen: ${error.message}`, "error");
+      scheduleReconnect(transport, target);
+    }
+  }, delay);
+}
+
+function toggleRoomFavorite(key) {
+  if (state.roomFavorites.has(key)) state.roomFavorites.delete(key);
+  else state.roomFavorites.add(key);
+  try {
+    localStorage.setItem("meshcore-dashboard-room-favorites", JSON.stringify([...state.roomFavorites]));
+  } catch {}
+  renderContacts();
+}
+
 function openRoomConversation(contact) {
-  state.activeChannel = "dm";
+  state.activeChannel = `room:${contact.prefix}`;
   state.dmTarget = contact.key;
   updateMessageInputPlaceholder();
   renderChannels();
@@ -1370,6 +1801,7 @@ function parseSelfInfo(data) {
 
 function parseDeviceInfo(data) {
   const fw = data[1] ?? 0;
+  state.protocolVersion = fw;
   el.deviceVersion.textContent = `Proto ${fw}`;
   if (fw >= 3 && data.length >= 80) {
     state.maxChannels = Math.max(1, data[3] || 8);
@@ -1526,8 +1958,9 @@ function addMessage(message) {
   state.messages = state.messages.slice(0, 200);
 
   if (message.kind === "contact") {
-    if (state.activeChannel !== "dm") {
-      state.unreadChannels.set("dm", (state.unreadChannels.get("dm") || 0) + 1);
+    const roomKey = message.prefix && state.roomSessions.has(message.prefix) ? `room:${message.prefix}` : "dm";
+    if (state.activeChannel !== roomKey) {
+      state.unreadChannels.set(roomKey, (state.unreadChannels.get(roomKey) || 0) + 1);
     }
   }
   if ((message.kind === "channel" || message.kind === "data") && message.channel != null) {
@@ -1601,7 +2034,7 @@ function renderContacts() {
             <td>${renderTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
             <td>
-              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : contact.type === 3 ? `<button type="button" class="secondary" data-room-login="${escapeHtml(contact.key)}"${state.connected ? "" : " disabled"}>${state.roomSessions.has(contact.prefix) ? "Room offen" : "Beitreten"}</button>` : "-"}
+              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : contact.type === 3 ? `<button type="button" class="secondary favorite-button" data-room-favorite="${escapeHtml(contact.key)}" aria-pressed="${state.roomFavorites.has(contact.key)}" title="Room-Favorit">${state.roomFavorites.has(contact.key) ? "&#9733;" : "&#9734;"}</button> ${state.roomSessions.has(contact.prefix) ? `<button type="button" class="secondary" data-room-open="${escapeHtml(contact.key)}">Oeffnen</button> <button type="button" class="secondary" data-room-logout="${escapeHtml(contact.key)}">Verlassen</button>` : `<button type="button" class="secondary" data-room-login="${escapeHtml(contact.key)}"${state.connected ? "" : " disabled"}>Beitreten</button>`}` : "-"}
             </td>
           </tr>
         `).join("")}
@@ -1613,7 +2046,8 @@ function renderChannelTabs() {
   const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
   const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
   const dmLabel = dmContact?.type === 3 && state.roomSessions.has(dmContact.prefix) ? `Room: ${dmContact.name}` : "DM";
-  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: dmLabel }, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
+  const roomTabs = [...state.roomSessions.entries()].map(([prefix, session]) => ({ key: `room:${prefix}`, label: `Room: ${session.name}${session.admin ? " · Admin" : ""}` }));
+  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: dmLabel }, ...roomTabs, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
   const totalUnread = [...state.unreadChannels.values()].reduce((total, count) => total + Number(count || 0), 0);
   el.channelTabs.innerHTML = tabs.map((tab) => {
     const unreadCount = tab.key === "all" ? totalUnread : Number(state.unreadChannels.get(tab.key) || 0);
@@ -1643,7 +2077,7 @@ function renderChannels() {
   }
   const channels = [...state.channels.values()].sort((a, b) => a.index - b.index);
   const visible = channels.filter((channel) => channel.enabled || channel.name);
-  el.channelCount.textContent = String(visible.length);
+  el.channelCount.textContent = `${visible.length}/${state.maxChannels}`;
   if (!visible.length) {
     el.channels.className = "list empty";
     el.channels.textContent = "Noch keine Kanaele synchronisiert.";
@@ -1652,23 +2086,30 @@ function renderChannels() {
     el.channels.innerHTML = visible.map((channel) => `
       <div class="channel">
         <div class="channel-title-row">
-          <strong>#${channel.index} ${escapeHtml(channel.name || "(leer)")}</strong>
-          ${channel.index === 0 ? "" : `<button type="button" class="secondary channel-remove-button" data-remove-channel="${channel.index}" aria-label="Kanal ${escapeHtml(channel.name || String(channel.index))} entfernen" title="Kanal entfernen"${state.connected ? "" : " disabled"}>&times;</button>`}
+          <strong>#${channel.index} ${escapeHtml(channel.name || "(leer)")} <span class="meta">${channel.index === 0 ? "Public" : channel.name.startsWith("#") ? "Hashtag" : "Privat"}</span></strong>
+          <span class="channel-actions">
+            <button type="button" class="secondary channel-small-button" data-reveal-channel="${channel.index}" title="Secret ${state.revealedChannelSecrets.has(channel.index) ? "verbergen" : "anzeigen"}">${state.revealedChannelSecrets.has(channel.index) ? "Verbergen" : "Secret"}</button>
+            <button type="button" class="secondary channel-small-button" data-channel-invite="${channel.index}" title="Invite anzeigen">Invite</button>
+            ${channel.index === 0 ? "" : `<button type="button" class="secondary channel-small-button" data-edit-channel="${channel.index}" title="Umbenennen oder verschieben"${state.connected ? "" : " disabled"}>Bearbeiten</button><button type="button" class="secondary channel-remove-button" data-remove-channel="${channel.index}" aria-label="Kanal ${escapeHtml(channel.name || String(channel.index))} entfernen" title="Kanal entfernen"${state.connected ? "" : " disabled"}>&times;</button>`}
+          </span>
         </div>
-        <span class="meta mono">${escapeHtml(channel.secret)}</span>
+        <span class="meta mono">${state.revealedChannelSecrets.has(channel.index) ? escapeHtml(channel.secret) : "••••••••••••••••••••••••••••••••"}</span>
       </div>
     `).join("");
   }
 
-  const selected = state.activeChannel === "dm" ? "dm" : el.channelSelect.value || state.activeChannel;
+  const selected = state.activeChannel === "dm" || state.activeChannel.startsWith("room:") ? state.activeChannel : el.channelSelect.value || state.activeChannel;
   const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
   const dmOption = dmContact && (dmContact.type === 1 || dmContact.type === 3)
     ? `<option value="dm">${dmContact.type === 3 ? "Room" : "DM"}: ${escapeHtml(dmContact.name)}</option>`
     : "";
-  el.channelSelect.innerHTML = dmOption + visible.map((channel) => (
+  const roomOptions = [...state.roomSessions.entries()].map(([prefix, session]) => `<option value="room:${escapeHtml(prefix)}">Room: ${escapeHtml(session.name)}</option>`).join("");
+  el.channelSelect.innerHTML = dmOption + roomOptions + visible.map((channel) => (
     `<option value="${channel.index}">#${channel.index} ${escapeHtml(channel.name || "Kanal")}</option>`
   )).join("");
-  if (selected === "dm" && dmOption) {
+  if (selected.startsWith("room:") && state.roomSessions.has(selected.slice(5))) {
+    el.channelSelect.value = selected;
+  } else if (selected === "dm" && dmOption) {
     el.channelSelect.value = "dm";
   } else if (selected && (selected === "all" || visible.some((channel) => String(channel.index) === String(selected)))) {
     el.channelSelect.value = selected;
@@ -1676,7 +2117,7 @@ function renderChannels() {
     el.channelSelect.value = String(visible[0].index);
   }
   renderChannelTabs();
-  const canSend = state.connected && (visible.length > 0 || Boolean(dmOption));
+  const canSend = visible.length > 0 || Boolean(dmOption) || state.roomSessions.size > 0;
   el.channelSelect.disabled = !canSend;
   el.messageInput.disabled = !canSend;
   el.emojiPickerBtn.disabled = !canSend;
@@ -1684,15 +2125,19 @@ function renderChannels() {
 }
 
 function renderMessages() {
-  if (state.activeChannel === "dm") {
+  if (state.activeChannel.startsWith("room:")) {
+    state.unreadChannels.delete(state.activeChannel);
+  } else if (state.activeChannel === "dm") {
     state.unreadChannels.delete("dm");
   } else if (state.activeChannel !== "all") {
     state.unreadChannels.delete(String(state.activeChannel));
   }
 
   const filtered = state.messages.filter((message) => {
+    const roomPrefix = state.activeChannel.startsWith("room:") ? state.activeChannel.slice(5) : null;
     const inActiveChannel = state.activeChannel === "all"
-      || (state.activeChannel === "dm" && (message.kind === "contact" || message.outgoing === true))
+      || (roomPrefix && message.kind === "contact" && message.prefix === roomPrefix)
+      || (state.activeChannel === "dm" && (message.kind === "contact" || message.outgoing === true) && !state.roomSessions.has(message.prefix))
       || (["channel", "data", "out"].includes(message.kind) && Number(message.channel) === Number(state.activeChannel));
     if (!inActiveChannel) return false;
     const outgoing = message.kind === "out" || message.outgoing === true;
@@ -1709,6 +2154,8 @@ function renderMessages() {
       ? "Noch keine Nachrichten."
       : state.activeChannel === "dm"
         ? "Noch keine Direktnachrichten in diesem Tab."
+        : state.activeChannel.startsWith("room:")
+          ? "Noch keine Nachrichten in diesem Room."
         : "Noch keine Nachrichten in diesem Kanal.";
     return;
   }
@@ -1863,6 +2310,40 @@ function setPanelCollapsed(panel, collapsed, panelName = panel.querySelector(".p
   }
 }
 
+function loadBooleanSetting(key, fallback) {
+  const value = localStorage.getItem(key);
+  return value == null ? fallback : value === "true";
+}
+
+function loadSendQueue() {
+  try {
+    const queue = JSON.parse(localStorage.getItem("meshcore-dashboard-send-queue") || "[]");
+    return Array.isArray(queue) ? queue.slice(0, 50) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSendQueue() {
+  try {
+    localStorage.setItem("meshcore-dashboard-send-queue", JSON.stringify(state.sendQueue.slice(0, 50)));
+  } catch {}
+}
+
+function migrateStorage() {
+  try {
+    const current = Number(localStorage.getItem("meshcore-dashboard-schema") || 0);
+    if (current < 2) {
+      const messages = JSON.parse(localStorage.getItem("meshcore-dashboard-messages") || "[]");
+      if (Array.isArray(messages)) {
+        for (const message of messages) message.id ||= createMessageId();
+        localStorage.setItem("meshcore-dashboard-messages", JSON.stringify(messages.slice(0, 200)));
+      }
+    }
+    localStorage.setItem("meshcore-dashboard-schema", String(STORAGE_SCHEMA_VERSION));
+  } catch {}
+}
+
 function loadCollapsedPanels() {
   try {
     const panelIds = JSON.parse(localStorage.getItem("meshcore-dashboard-collapsed-panels") || "[]");
@@ -1907,7 +2388,7 @@ function getDeliveryStatus(message) {
 }
 
 function deliveryStatusLabel(status) {
-  return ({ waiting: "Wartet", sent: "Gesendet", confirmed: "Bestätigt", failed: "Fehlgeschlagen" })[status] || "";
+  return ({ queued: "Warteschlange", waiting: "Wartet", sent: "Gesendet", confirmed: "Bestätigt", failed: "Fehlgeschlagen" })[status] || "";
 }
 
 function formatHopCount(pathLen) {
@@ -1934,6 +2415,41 @@ function prepareMessageForSend(message) {
   message.ackCode = null;
   message.roundTrip = null;
   message.timestamp = Math.floor(Date.now() / 1000);
+}
+
+function createMessageId() {
+  return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function queueMessage(entry) {
+  const index = state.sendQueue.findIndex((item) => item.id === entry.id);
+  if (index >= 0) state.sendQueue[index] = entry;
+  else state.sendQueue.push(entry);
+  persistSendQueue();
+}
+
+function dequeueMessage(id) {
+  if (!id) return;
+  state.sendQueue = state.sendQueue.filter((item) => item.id !== id);
+  persistSendQueue();
+}
+
+async function flushSendQueue() {
+  if (!state.connected || state.flushingQueue || !state.sendQueue.length) return;
+  state.flushingQueue = true;
+  try {
+    for (const queued of [...state.sendQueue]) {
+      if (!state.connected) break;
+      const message = state.messages.find((item) => item.id === queued.id);
+      if (queued.type === "channel") await sendChannelMessage(queued.channelIndex, queued.text, message || null);
+      else await sendDirectMessage(queued.key, queued.text, message || null);
+    }
+  } catch (error) {
+    log(`Sendewarteschlange pausiert: ${error.message}`, "error");
+  } finally {
+    state.flushingQueue = false;
+    updateConnectionUi();
+  }
 }
 
 function updateStoredMessage(message) {
@@ -2552,15 +3068,23 @@ function closeEmojiPicker() {
 
 function updateConnectionUi() {
   const transportLabel = state.transport === "bluetooth" ? "Bluetooth" : state.transport === "usb" ? "USB" : null;
-  el.connectionState.textContent = state.connected ? `Verbunden (${transportLabel})` : "Nicht verbunden";
+  const idleSeconds = state.connected && state.lastPacketAt ? Math.floor((Date.now() - state.lastPacketAt) / 1000) : 0;
+  const queueLabel = state.sendQueue.length ? `, ${state.sendQueue.length} wartend` : "";
+  el.connectionState.textContent = state.connected
+    ? `${idleSeconds > 90 ? "Keine Daten" : "Verbunden"} (${transportLabel}${queueLabel})`
+    : `Nicht verbunden${queueLabel}`;
   el.connectBtn.disabled = state.connected || !("serial" in navigator);
-  el.bleConnectBtn.disabled = state.connected;
+  el.bleConnectBtn.disabled = state.connected || !("bluetooth" in navigator);
   el.syncBtn.disabled = !state.connected;
   el.advertBtn.disabled = !state.connected;
   el.disconnectBtn.disabled = !state.connected;
   el.channelNameInput.disabled = !state.connected;
   el.channelTypeSelect.disabled = !state.connected;
   el.createChannelBtn.disabled = !state.connected;
+  el.importContactCardBtn.disabled = !state.connected;
+  el.importChannelInviteBtn.disabled = !state.connected;
+  el.exportChannelsBtn.disabled = !state.channels.size;
+  el.importChannelsBtn.disabled = !state.connected;
   updateChannelSecretField();
   updateMessageInputPlaceholder();
   renderChannels();
@@ -3134,6 +3658,8 @@ function exportConfiguration() {
       autoPongPostalCode: state.autoPongPostalCode,
       quickReplyRules: state.quickReplyRules,
       favoriteContacts: [...state.favoriteContacts],
+      roomFavorites: [...state.roomFavorites],
+      autoReconnect: state.autoReconnect,
     },
   };
   const blob = new Blob([JSON.stringify(configuration, null, 2)], { type: "application/json" });
@@ -3160,6 +3686,8 @@ async function importConfiguration(event) {
     if (typeof settings.autoPongPostalCode === "string") localStorage.setItem("meshcore-dashboard-auto-pong-postal-code", settings.autoPongPostalCode);
     if (Array.isArray(settings.quickReplyRules)) localStorage.setItem("meshcore-dashboard-quick-reply-rules", JSON.stringify(settings.quickReplyRules));
     if (Array.isArray(settings.favoriteContacts)) localStorage.setItem("meshcore-dashboard-favorite-contacts", JSON.stringify(settings.favoriteContacts));
+    if (Array.isArray(settings.roomFavorites)) localStorage.setItem("meshcore-dashboard-room-favorites", JSON.stringify(settings.roomFavorites));
+    if (typeof settings.autoReconnect === "boolean") localStorage.setItem("meshcore-dashboard-auto-reconnect", String(settings.autoReconnect));
     showActionNotice("Konfiguration importiert. Seite wird neu geladen.");
     setTimeout(() => location.reload(), 700);
   } catch (error) {

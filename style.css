@@ -98,7 +98,8 @@ dt {
 
 button,
 select,
-input {
+input,
+textarea {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -151,8 +152,15 @@ select:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   padding: 0 10px;
+}
+
+textarea {
+  padding-top: 9px;
+  padding-bottom: 9px;
+  resize: vertical;
 }
 
 main {
@@ -278,6 +286,30 @@ main {
   overflow-wrap: anywhere;
 }
 
+.channel-qr {
+  display: grid;
+  min-height: 180px;
+  margin: 16px;
+  place-items: center;
+  background: #ffffff;
+}
+
+.channel-qr:empty {
+  min-height: 0;
+  background: transparent;
+}
+
+.invite-text {
+  width: calc(100% - 32px);
+  margin: 0 16px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.invite-actions {
+  padding: 12px 16px 16px;
+}
+
 .status-band {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -393,6 +425,20 @@ dd {
 
 .panel-toolbar input {
   width: min(280px, 100%);
+}
+
+.status-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.status-toggle input {
+  margin: 0;
 }
 
 .message-filter-bar {
@@ -899,6 +945,20 @@ dd {
   color: var(--danger);
   font-size: 20px;
   line-height: 1;
+}
+
+.channel-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.channel-small-button {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 .message {
