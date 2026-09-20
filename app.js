@@ -17,6 +17,7 @@ const CMD = {
   DEVICE_QUERY: 0x16,
   GET_CHANNEL: 0x1f,
   SET_CHANNEL: 0x20,
+  SEND_LOGIN: 0x1a,
 };
 
 const RESP = {
@@ -43,6 +44,8 @@ const RESP = {
   LOG_DATA: 0x88,
   NEW_ADVERT: 0x8a,
   TELEMETRY: 0x8b,
+  LOGIN_SUCCESS: 0x85,
+  LOGIN_FAIL: 0x86,
 };
 
 const TYPE_NAMES = {
@@ -108,6 +111,8 @@ const state = {
   networkHeatLayer: null,
   networkMapBounds: null,
   networkMapSignature: "",
+  roomSessions: new Set(),
+  pendingRoomLogin: null,
   dmTarget: null,
   unreadChannels: new Map(),
   ackResults: new Map(),
@@ -156,6 +161,7 @@ const el = {
   channelForm: document.querySelector("#channelForm"),
   channelNameInput: document.querySelector("#channelNameInput"),
   channelTypeSelect: document.querySelector("#channelTypeSelect"),
+  channelSecretInput: document.querySelector("#channelSecretInput"),
   createChannelBtn: document.querySelector("#createChannelBtn"),
   messageInput: document.querySelector("#messageInput"),
   emojiPickerBtn: document.querySelector("#emojiPickerBtn"),
@@ -202,6 +208,12 @@ const el = {
   networkGraph: document.querySelector("#networkGraph"),
   fullscreenMapBtn: document.querySelector("#fullscreenMapBtn"),
   resetPacketStatsBtn: document.querySelector("#resetPacketStatsBtn"),
+  roomLoginDialog: document.querySelector("#roomLoginDialog"),
+  roomLoginForm: document.querySelector("#roomLoginForm"),
+  roomLoginTarget: document.querySelector("#roomLoginTarget"),
+  roomPasswordInput: document.querySelector("#roomPasswordInput"),
+  roomLoginSubmitBtn: document.querySelector("#roomLoginSubmitBtn"),
+  closeRoomLoginBtn: document.querySelector("#closeRoomLoginBtn"),
 };
 
 applyTheme(loadTheme());
@@ -435,7 +447,15 @@ el.sendForm.addEventListener("submit", async (event) => {
   }
 });
 el.channelForm.addEventListener("submit", createChannel);
+el.channelTypeSelect.addEventListener("change", updateChannelSecretField);
+el.roomLoginForm.addEventListener("submit", loginToRoomServer);
+el.closeRoomLoginBtn.addEventListener("click", () => el.roomLoginDialog.close());
 el.contacts.addEventListener("click", (event) => {
+  const roomBtn = event.target.closest("button[data-room-login]");
+  if (roomBtn) {
+    openRoomLogin(roomBtn.dataset.roomLogin);
+    return;
+  }
   const favoriteBtn = event.target.closest("button[data-favorite]");
   if (favoriteBtn) {
     toggleFavoriteContact(favoriteBtn.dataset.favorite);
@@ -601,6 +621,8 @@ function handleBluetoothDisconnected() {
   state.transport = null;
   rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
   clearPendingPings();
+  state.roomSessions.clear();
+  state.pendingRoomLogin = null;
   failPendingMessages("Bluetooth-Verbindung getrennt.");
   state.bluetoothTx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
   state.bluetoothDevice?.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
@@ -618,6 +640,8 @@ async function disconnect() {
   state.transport = null;
   rejectPendingWaiters(new Error("Verbindung getrennt."));
   clearPendingPings();
+  state.roomSessions.clear();
+  state.pendingRoomLogin = null;
   failPendingMessages("Verbindung getrennt.");
   try {
     if (state.reader) {
@@ -792,9 +816,17 @@ async function createChannel(event) {
     return;
   }
 
-  const secret = type === "hashtag"
-    ? new Uint8Array(await crypto.subtle.digest("SHA-256", nameBytes)).slice(0, 16)
-    : crypto.getRandomValues(new Uint8Array(16));
+  let secret;
+  try {
+    secret = type === "hashtag"
+      ? new Uint8Array(await crypto.subtle.digest("SHA-256", nameBytes)).slice(0, 16)
+      : type === "private-join"
+        ? parseChannelSecret(el.channelSecretInput.value)
+        : crypto.getRandomValues(new Uint8Array(16));
+  } catch (error) {
+    showActionNotice(error.message, "error");
+    return;
+  }
   const payload = new Uint8Array(50);
   payload[0] = CMD.SET_CHANNEL;
   payload[1] = freeIndex;
@@ -806,7 +838,8 @@ async function createChannel(event) {
     await sendAndWait(payload, [RESP.OK]);
     await sendAndWait([CMD.GET_CHANNEL, freeIndex], [RESP.CHANNEL_INFO]);
     el.channelNameInput.value = "";
-    log(`${type === "hashtag" ? "Hashtag" : "Privater Kanal"} ${name} in Slot ${freeIndex} angelegt.`);
+    el.channelSecretInput.value = "";
+    log(`${type === "hashtag" ? "Hashtag" : "Privater Kanal"} ${name} in Slot ${freeIndex} ${type === "private-join" ? "beigetreten" : "angelegt"}.`);
   } catch (error) {
     log(`Kanal konnte nicht angelegt werden: ${error.message}`, "error");
   } finally {
@@ -855,7 +888,9 @@ async function sendCommand(payloadLike) {
   } else {
     throw new Error("Keine aktive Verbindung.");
   }
-  log(payload[0] === CMD.SET_CHANNEL ? "TX SET_CHANNEL [Schluessel verborgen]" : `TX ${toHex(payload)}`);
+  if (payload[0] === CMD.SET_CHANNEL) log("TX SET_CHANNEL [Schluessel verborgen]");
+  else if (payload[0] === CMD.SEND_LOGIN) log("TX SEND_LOGIN [Passwort verborgen]");
+  else log(`TX ${toHex(payload)}`);
 }
 
 function rejectPendingWaiters(error) {
@@ -962,6 +997,12 @@ function handlePacket(data) {
     case RESP.LOG_DATA:
       parseLogData(data);
       break;
+    case RESP.LOGIN_SUCCESS:
+      parseRoomLoginResult(data, true);
+      break;
+    case RESP.LOGIN_FAIL:
+      parseRoomLoginResult(data, false);
+      break;
     case RESP.NO_MORE_MESSAGES:
     case RESP.OK:
     case RESP.SENT:
@@ -1028,6 +1069,94 @@ async function sendDirectMessage(key, text, existingMessage = null) {
     }
   }
   return response;
+}
+
+function updateChannelSecretField() {
+  const joining = el.channelTypeSelect.value === "private-join";
+  el.channelSecretInput.hidden = !joining;
+  el.channelSecretInput.disabled = !state.connected || !joining;
+  el.channelSecretInput.required = joining;
+  el.createChannelBtn.textContent = joining ? "Beitreten" : "Anlegen";
+}
+
+function parseChannelSecret(value) {
+  const secret = value.trim();
+  if (/^[0-9a-f]{32}$/i.test(secret)) return hexToBytes(secret);
+  try {
+    const decoded = Uint8Array.from(atob(secret), (character) => character.charCodeAt(0));
+    if (decoded.length === 16) return decoded;
+  } catch {}
+  throw new Error("Das Kanal-Secret muss 32 Hex-Zeichen oder 16 Byte Base64 enthalten.");
+}
+
+function openRoomLogin(key) {
+  const contact = state.contacts.get(key);
+  if (!contact || contact.type !== 3) return;
+  if (state.roomSessions.has(contact.prefix)) {
+    openRoomConversation(contact);
+    return;
+  }
+  state.pendingRoomLogin = { contact, awaitingResult: false };
+  el.roomLoginTarget.textContent = `${contact.name} (${contact.prefix})`;
+  el.roomPasswordInput.value = "";
+  el.roomLoginDialog.showModal();
+  el.roomPasswordInput.focus();
+}
+
+async function loginToRoomServer(event) {
+  event.preventDefault();
+  const pending = state.pendingRoomLogin;
+  if (!pending?.contact || !state.connected) return;
+  const password = encodeText(el.roomPasswordInput.value);
+  if (password.length > 15) {
+    el.roomPasswordInput.setCustomValidity("Das Passwort darf maximal 15 UTF-8-Bytes lang sein.");
+    el.roomPasswordInput.reportValidity();
+    return;
+  }
+  el.roomPasswordInput.setCustomValidity("");
+  const payload = new Uint8Array(33 + password.length);
+  payload[0] = CMD.SEND_LOGIN;
+  payload.set(hexToBytes(pending.contact.key), 1);
+  payload.set(password, 33);
+  pending.awaitingResult = true;
+  el.roomLoginSubmitBtn.disabled = true;
+  try {
+    await sendAndWait(payload, [RESP.SENT], 8000);
+    el.roomLoginDialog.close();
+    showActionNotice(`Login an ${pending.contact.name} gesendet.`);
+  } catch (error) {
+    pending.awaitingResult = false;
+    showActionNotice(`Room-Login fehlgeschlagen: ${error.message}`, "error");
+  } finally {
+    el.roomLoginSubmitBtn.disabled = false;
+  }
+}
+
+function parseRoomLoginResult(data, success) {
+  const pending = state.pendingRoomLogin;
+  const prefix = success && data.length >= 8 ? sliceHex(data, 2, 8) : pending?.contact?.prefix;
+  const contact = [...state.contacts.values()].find((item) => item.prefix === prefix) || pending?.contact;
+  if (!contact) return;
+  if (success) {
+    state.roomSessions.add(contact.prefix);
+    state.pendingRoomLogin = null;
+    showActionNotice(`Room ${contact.name} verbunden.`);
+    openRoomConversation(contact);
+  } else {
+    state.pendingRoomLogin = null;
+    showActionNotice(`Login bei ${contact.name} abgelehnt oder Zeitlimit erreicht.`, "error");
+    renderContacts();
+  }
+}
+
+function openRoomConversation(contact) {
+  state.activeChannel = "dm";
+  state.dmTarget = contact.key;
+  updateMessageInputPlaceholder();
+  renderChannels();
+  renderContacts();
+  renderMessages();
+  renderChannelTabs();
 }
 
 async function pingContact(key) {
@@ -1420,7 +1549,7 @@ function renderContacts() {
             <td>${renderTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
             <td>
-              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : "-"}
+              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : contact.type === 3 ? `<button type="button" class="secondary" data-room-login="${escapeHtml(contact.key)}"${state.connected ? "" : " disabled"}>${state.roomSessions.has(contact.prefix) ? "Room offen" : "Beitreten"}</button>` : "-"}
             </td>
           </tr>
         `).join("")}
@@ -1476,8 +1605,8 @@ function renderChannels() {
 
   const selected = state.activeChannel === "dm" ? "dm" : el.channelSelect.value || state.activeChannel;
   const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
-  const dmOption = dmContact && dmContact.type === 1
-    ? `<option value="dm">DM: ${escapeHtml(dmContact.name)}</option>`
+  const dmOption = dmContact && (dmContact.type === 1 || dmContact.type === 3)
+    ? `<option value="dm">${dmContact.type === 3 ? "Room" : "DM"}: ${escapeHtml(dmContact.name)}</option>`
     : "";
   el.channelSelect.innerHTML = dmOption + visible.map((channel) => (
     `<option value="${channel.index}">#${channel.index} ${escapeHtml(channel.name || "Kanal")}</option>`
@@ -1490,7 +1619,7 @@ function renderChannels() {
     el.channelSelect.value = String(visible[0].index);
   }
   renderChannelTabs();
-  const canSend = state.connected && visible.length > 0;
+  const canSend = state.connected && (visible.length > 0 || Boolean(dmOption));
   el.channelSelect.disabled = !canSend;
   el.messageInput.disabled = !canSend;
   el.emojiPickerBtn.disabled = !canSend;
@@ -1552,7 +1681,7 @@ function renderMessages() {
       const replyContact = message.prefix
         ? [...state.contacts.values()].find((contact) => contact.prefix === message.prefix)
         : null;
-      const replyButton = isDm && replyContact?.type === 1
+      const replyButton = isDm && (replyContact?.type === 1 || (replyContact?.type === 3 && state.roomSessions.has(replyContact.prefix)))
         ? `<button type="button" class="secondary" data-reply="${escapeHtml(message.prefix)}">Antworten</button>`
       : "";
     const pingReply = getPingReply(message);
@@ -2375,6 +2504,7 @@ function updateConnectionUi() {
   el.channelNameInput.disabled = !state.connected;
   el.channelTypeSelect.disabled = !state.connected;
   el.createChannelBtn.disabled = !state.connected;
+  updateChannelSecretField();
   updateMessageInputPlaceholder();
   renderChannels();
   renderMessages();

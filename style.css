@@ -269,6 +269,15 @@ main {
   min-width: 0;
 }
 
+.channel-form .channel-secret-input {
+  flex-basis: 230px;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.room-login-target {
+  overflow-wrap: anywhere;
+}
+
 .status-band {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

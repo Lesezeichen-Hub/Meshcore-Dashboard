@@ -81,8 +81,10 @@
             <input id="channelNameInput" type="text" maxlength="31" placeholder="Kanalname" aria-label="Kanalname" disabled required>
             <select id="channelTypeSelect" aria-label="Kanaltyp" disabled>
               <option value="hashtag">Hashtag</option>
-              <option value="private">Privat</option>
+              <option value="private-new">Privat neu</option>
+              <option value="private-join">Privat beitreten</option>
             </select>
+            <input id="channelSecretInput" class="channel-secret-input" type="password" autocomplete="off" placeholder="Secret: 32 Hex-Zeichen" aria-label="Kanal-Secret" maxlength="32" hidden disabled>
             <button id="createChannelBtn" type="submit" disabled>Anlegen</button>
           </form>
         </article>
@@ -262,6 +264,21 @@
         <dt><code>zeit &lt;Ort&gt;</code></dt><dd>Lokale Uhrzeit</dd>
         <dt><code>sonne &lt;Ort&gt;</code></dt><dd>Sonnenauf- und -untergang</dd>
       </dl>
+    </dialog>
+
+    <dialog id="roomLoginDialog" class="settings-dialog" aria-labelledby="roomLoginTitle">
+      <form id="roomLoginForm">
+        <div class="dialog-head">
+          <h2 id="roomLoginTitle">Room-Server beitreten</h2>
+          <button id="closeRoomLoginBtn" type="button" class="secondary dialog-close" aria-label="Dialog schliessen" title="Schliessen">&times;</button>
+        </div>
+        <p id="roomLoginTarget" class="room-login-target"></p>
+        <label class="field-label" for="roomPasswordInput">Passwort</label>
+        <input id="roomPasswordInput" type="password" autocomplete="current-password" maxlength="15" placeholder="Leer lassen, falls keines gesetzt">
+        <div class="dialog-actions">
+          <button id="roomLoginSubmitBtn" type="submit">Beitreten</button>
+        </div>
+      </form>
     </dialog>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>

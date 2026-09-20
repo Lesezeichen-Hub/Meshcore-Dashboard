@@ -50,5 +50,7 @@ gemeinsam aktualisiert.
 - Informationsdienste `zeit <Ort>` und `sonne <Ort>` im Kanal `#wetter`
 - Als Progressive Web App installierbar und nach dem ersten Laden offline startbar
 - eigenes Advertisement per Button senden
+- Verschluesselten privaten Kanaelen per 16-Byte-Secret (Hex oder Base64) beitreten oder neue private Kanaele erzeugen
+- Bekannten Room-Servern mit optionalem Passwort beitreten und die Room-Unterhaltung als Direktchat oeffnen
 
 Hinweis: Web Serial und Web Bluetooth sind in Firefox/Safari nicht verfuegbar. Nutze fuer USB die `companion_radio_usb`- und fuer Bluetooth die Companion-BLE-Firmware, jeweils nicht im KISS-Modus.
