@@ -1,6 +1,6 @@
 {
-  "version": "1.6.0",
+  "version": "1.7.0",
   "name": "MeshCore Dashboard",
   "description": "Lokales Lesezeichen-Hub-Modul fuer einen MeshCore USB-Companion mit Kanaelen, Nachrichten, Kontakten, Routing- und Funkdetails.",
-  "updated_at": "2026-09-19"
+  "updated_at": "2026-09-20"
 }

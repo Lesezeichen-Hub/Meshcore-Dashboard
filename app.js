@@ -57,6 +57,11 @@ const TXT_TYPE_PLAIN = 0;
 const PING_TARGET_CHANNEL = "ping";
 const DEFAULT_QUICK_REPLY_TEMPLATE = "@[{name}] {hops} Hops in {plz} | SNR {snr} | RSSI {rssi}";
 const QUICK_REPLY_DEFAULT_CHANNELS = new Set(["public", "test"]);
+const WEATHER_TARGET_CHANNEL = "wetter";
+const WEATHER_COMMAND = "wetter";
+const WEATHER_REPLY_DELAY_MS = 1000;
+const WEATHER_COOLDOWN_MS = 30000;
+const WEATHER_FETCH_TIMEOUT_MS = 8000;
 const PING_ACK_TIMEOUT_DEFAULT_MS = 60000;
 const PING_ACK_TIMEOUT_MIN_MS = 30000;
 const PING_ACK_TIMEOUT_MAX_MS = 120000;
@@ -96,6 +101,9 @@ const state = {
   quickReplyRules: loadQuickReplyRules(),
   quickReplyHandled: loadHandledQuickReplies(),
   quickReplyCooldowns: new Map(),
+  weatherEnabled: loadWeatherSetting(),
+  weatherHandled: loadHandledWeatherRequests(),
+  weatherCooldowns: new Map(),
   autoPongEnabled: loadAutoPongSetting() && isValidPostalCode(loadAutoPongPostalCode()),
   autoPongPostalCode: loadAutoPongPostalCode(),
   autoPongHandled: loadHandledPings(),
@@ -142,6 +150,7 @@ const el = {
   actionNotice: document.querySelector("#actionNotice"),
   themeToggle: document.querySelector("#themeToggle"),
   autoPongToggle: document.querySelector("#autoPongToggle"),
+  weatherToggle: document.querySelector("#weatherToggle"),
   autoPongSettingsBtn: document.querySelector("#autoPongSettingsBtn"),
   autoPongSettingsDialog: document.querySelector("#autoPongSettingsDialog"),
   autoPongSettingsForm: document.querySelector("#autoPongSettingsForm"),
@@ -153,6 +162,7 @@ const el = {
 
 applyTheme(loadTheme());
 el.autoPongToggle.checked = state.autoPongEnabled;
+el.weatherToggle.checked = state.weatherEnabled;
 applyChatDensity(loadChatDensity());
 initializeCollapsiblePanels();
 
@@ -191,6 +201,15 @@ el.autoPongToggle.addEventListener("change", () => {
     // The setting still applies for this session.
   }
   showActionNotice(`Auto-Pong ${state.autoPongEnabled ? "aktiviert" : "deaktiviert"}.`);
+});
+el.weatherToggle.addEventListener("change", () => {
+  state.weatherEnabled = el.weatherToggle.checked;
+  try {
+    localStorage.setItem("meshcore-dashboard-weather-replies", String(state.weatherEnabled));
+  } catch {
+    // The setting still applies for this session.
+  }
+  showActionNotice(`Wetteransage ${state.weatherEnabled ? "aktiviert" : "deaktiviert"}.`);
 });
 el.autoPongSettingsBtn.addEventListener("click", openAutoPongSettings);
 el.closeAutoPongSettingsBtn.addEventListener("click", () => el.autoPongSettingsDialog.close());
@@ -1148,6 +1167,7 @@ function parseChannelMessage(data) {
   addMessage(message);
   queueAutoPong(message);
   queueAutoQuickReply(message);
+  queueWeatherReply(message);
 }
 
 function parseAck(data) {
@@ -1793,6 +1813,168 @@ function persistHandledQuickReplies() {
   try {
     localStorage.setItem("meshcore-dashboard-quick-reply-handled", JSON.stringify([...state.quickReplyHandled]));
   } catch {}
+}
+
+function getWeatherRequest(message) {
+  if (message.kind !== "channel" || message.channel == null || message.outgoing === true) return null;
+  const channelName = state.channels.get(message.channel)?.name || (message.channel === 0 ? "Public" : "");
+  if (normalizeChannelName(channelName) !== WEATHER_TARGET_CHANNEL) return null;
+
+  const text = String(message.text || "");
+  const separator = text.indexOf(":");
+  if (separator < 1) return null;
+  const sender = text.slice(0, separator).trim();
+  const body = text.slice(separator + 1).trim();
+  if (!sender || body.startsWith("@[")) return null;
+
+  const match = body.match(new RegExp(`^${WEATHER_COMMAND}\\s+(.{2,80})$`, "i"));
+  if (!match) return null;
+  const place = match[1].trim().replace(/\s+/g, " ");
+  if (!place) return null;
+  return { sender, place };
+}
+
+function queueWeatherReply(message) {
+  if (!state.weatherEnabled || !state.connected || !getWeatherRequest(message)) return;
+  setTimeout(() => maybeSendWeatherReply(message), WEATHER_REPLY_DELAY_MS);
+}
+
+async function maybeSendWeatherReply(message) {
+  if (!state.weatherEnabled || !state.connected) return;
+  const request = getWeatherRequest(message);
+  if (!request) return;
+
+  const fingerprint = `${message.channel}\u001f${message.timestamp}\u001f${message.text}`;
+  if (state.weatherHandled.has(fingerprint)) return;
+  rememberHandledWeatherRequest(fingerprint);
+
+  const senderKey = `${message.channel}:${request.sender.toLowerCase()}`;
+  const now = Date.now();
+  if (now - (state.weatherCooldowns.get(senderKey) || 0) < WEATHER_COOLDOWN_MS) {
+    log(`Wetteransage an ${request.sender} wegen Cooldown übersprungen.`);
+    return;
+  }
+  state.weatherCooldowns.set(senderKey, now);
+
+  try {
+    const weather = await fetchWeatherSummary(request.place);
+    await sendChannelMessage(message.channel, formatWeatherReply(request.sender, weather));
+    log(`Wetteransage fuer ${request.place} an ${request.sender} gesendet.`);
+  } catch (error) {
+    log(`Wetteransage fuer ${request.place} fehlgeschlagen: ${error.message}`, "error");
+    try {
+      await sendChannelMessage(message.channel, trimMessage(`@[${request.sender}] Wetter fuer ${request.place} gerade nicht verfuegbar.`));
+    } catch (sendError) {
+      log(`Wetter-Fehlerantwort konnte nicht gesendet werden: ${sendError.message}`, "error");
+    }
+  }
+}
+
+async function fetchWeatherSummary(place) {
+  const geoUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
+  geoUrl.searchParams.set("name", place);
+  geoUrl.searchParams.set("count", "1");
+  geoUrl.searchParams.set("language", "de");
+  geoUrl.searchParams.set("format", "json");
+
+  const geo = await fetchJsonWithTimeout(geoUrl);
+  const location = Array.isArray(geo.results) ? geo.results[0] : null;
+  if (!location) throw new Error("Ort nicht gefunden.");
+
+  const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
+  forecastUrl.searchParams.set("latitude", String(location.latitude));
+  forecastUrl.searchParams.set("longitude", String(location.longitude));
+  forecastUrl.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m");
+  forecastUrl.searchParams.set("timezone", "auto");
+  forecastUrl.searchParams.set("forecast_days", "1");
+
+  const forecast = await fetchJsonWithTimeout(forecastUrl);
+  if (!forecast.current) throw new Error("Keine Wetterdaten erhalten.");
+
+  return {
+    place: location.name || place,
+    admin: location.admin1 || location.country || "",
+    temperature: forecast.current.temperature_2m,
+    apparent: forecast.current.apparent_temperature,
+    precipitation: forecast.current.precipitation,
+    weatherCode: forecast.current.weather_code,
+    wind: forecast.current.wind_speed_10m,
+  };
+}
+
+async function fetchJsonWithTimeout(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WEATHER_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function formatWeatherReply(sender, weather) {
+  const place = [weather.place, weather.admin].filter(Boolean).join(", ");
+  const parts = [
+    `${formatNumber(weather.temperature, 0)}C`,
+    weatherCodeLabel(weather.weatherCode),
+    `gef. ${formatNumber(weather.apparent, 0)}C`,
+    `Wind ${formatNumber(weather.wind, 0)} km/h`,
+    `Regen ${formatNumber(weather.precipitation, 1)} mm`,
+  ].filter(Boolean);
+  return trimMessage(`@[${sender}] Wetter ${place}: ${parts.join(", ")}`);
+}
+
+function weatherCodeLabel(code) {
+  if (code == null) return "";
+  if (code === 0) return "klar";
+  if ([1, 2, 3].includes(code)) return "bewoelkt";
+  if ([45, 48].includes(code)) return "Nebel";
+  if ([51, 53, 55, 56, 57].includes(code)) return "Niesel";
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return "Regen";
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return "Schnee";
+  if ([95, 96, 99].includes(code)) return "Gewitter";
+  return `Code ${code}`;
+}
+
+function formatNumber(value, digits) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return number.toLocaleString("de-DE", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+function trimMessage(text) {
+  return text.length <= 150 ? text : `${text.slice(0, 147).trimEnd()}...`;
+}
+
+function loadWeatherSetting() {
+  try {
+    return localStorage.getItem("meshcore-dashboard-weather-replies") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function loadHandledWeatherRequests() {
+  try {
+    const values = JSON.parse(localStorage.getItem("meshcore-dashboard-weather-handled") || "[]");
+    return new Set(Array.isArray(values) ? values.slice(-200) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function rememberHandledWeatherRequest(fingerprint) {
+  state.weatherHandled.add(fingerprint);
+  while (state.weatherHandled.size > 200) {
+    state.weatherHandled.delete(state.weatherHandled.values().next().value);
+  }
+  try {
+    localStorage.setItem("meshcore-dashboard-weather-handled", JSON.stringify([...state.weatherHandled]));
+  } catch {
+    // In-memory deduplication still prevents repeated replies for this session.
+  }
 }
 
 function getChannelReply(message) {
