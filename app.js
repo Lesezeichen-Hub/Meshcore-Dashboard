@@ -447,6 +447,10 @@ el.sendForm.addEventListener("submit", async (event) => {
   }
 });
 el.channelForm.addEventListener("submit", createChannel);
+el.channels.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("button[data-remove-channel]");
+  if (removeButton) removeChannel(Number(removeButton.dataset.removeChannel));
+});
 el.channelTypeSelect.addEventListener("change", updateChannelSecretField);
 el.roomLoginForm.addEventListener("submit", loginToRoomServer);
 el.closeRoomLoginBtn.addEventListener("click", () => el.roomLoginDialog.close());
@@ -891,6 +895,27 @@ async function sendCommand(payloadLike) {
   if (payload[0] === CMD.SET_CHANNEL) log("TX SET_CHANNEL [Schluessel verborgen]");
   else if (payload[0] === CMD.SEND_LOGIN) log("TX SEND_LOGIN [Passwort verborgen]");
   else log(`TX ${toHex(payload)}`);
+}
+
+async function removeChannel(index) {
+  const channel = state.channels.get(index);
+  if (!state.connected || index === 0 || !channel?.enabled) return;
+  if (!confirm(`Kanal #${index} ${channel.name || ""} wirklich vom Companion entfernen?`)) return;
+
+  const payload = new Uint8Array(50);
+  payload[0] = CMD.SET_CHANNEL;
+  payload[1] = index;
+  try {
+    await sendAndWait(payload, [RESP.OK]);
+    await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
+    if (String(state.activeChannel) === String(index)) state.activeChannel = "all";
+    state.unreadChannels.delete(String(index));
+    renderChannels();
+    renderMessages();
+    showActionNotice(`Kanal #${index} entfernt.`);
+  } catch (error) {
+    showActionNotice(`Kanal konnte nicht entfernt werden: ${error.message}`, "error");
+  }
 }
 
 function rejectPendingWaiters(error) {
@@ -1597,7 +1622,10 @@ function renderChannels() {
     el.channels.className = "list";
     el.channels.innerHTML = visible.map((channel) => `
       <div class="channel">
-        <strong>#${channel.index} ${escapeHtml(channel.name || "(leer)")}</strong>
+        <div class="channel-title-row">
+          <strong>#${channel.index} ${escapeHtml(channel.name || "(leer)")}</strong>
+          ${channel.index === 0 ? "" : `<button type="button" class="secondary channel-remove-button" data-remove-channel="${channel.index}" aria-label="Kanal ${escapeHtml(channel.name || String(channel.index))} entfernen" title="Kanal entfernen"${state.connected ? "" : " disabled"}>&times;</button>`}
+        </div>
         <span class="meta mono">${escapeHtml(channel.secret)}</span>
       </div>
     `).join("");
