@@ -3335,7 +3335,7 @@ function renderNetworkMap() {
   el.networkMap.className = "network-map";
   if (!state.networkMap) {
     el.networkMap.textContent = "";
-    state.networkMap = L.map(el.networkMap, { zoomControl: true, scrollWheelZoom: true }).setView([51, 10], 6);
+    state.networkMap = L.map(el.networkMap, { zoomControl: true, scrollWheelZoom: true }).setView([51.0504, 13.7373], 9);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
