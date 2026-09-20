@@ -865,6 +865,25 @@ dd {
   border-bottom: 0;
 }
 
+.room-session-status {
+  margin: 10px 12px 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(87, 215, 160, 0.4);
+  border-radius: 6px;
+  background: rgba(87, 215, 160, 0.09);
+  font-size: 12px;
+}
+
+.room-session-status[data-state="pending"] {
+  border-color: rgba(243, 201, 105, 0.45);
+  background: rgba(243, 201, 105, 0.09);
+}
+
+.room-session-status[data-state="error"] {
+  border-color: rgba(255, 107, 107, 0.45);
+  background: rgba(255, 107, 107, 0.09);
+}
+
 .channel-title-row {
   display: flex;
   align-items: center;

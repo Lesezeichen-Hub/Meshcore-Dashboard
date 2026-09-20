@@ -53,5 +53,6 @@ gemeinsam aktualisiert.
 - Verschluesselten privaten Kanaelen per 16-Byte-Secret (Hex oder Base64) beitreten oder neue private Kanaele erzeugen
 - Kanaele aus nicht reservierten Slots wieder vom Companion entfernen
 - Bekannten Room-Servern mit optionalem Passwort beitreten und die Room-Unterhaltung als Direktchat oeffnen
+- Dauerhaften Room-Login-Status mit Erfolg, Fehler oder Timeout sowie benanntem Room-Tab anzeigen
 
 Hinweis: Web Serial und Web Bluetooth sind in Firefox/Safari nicht verfuegbar. Nutze fuer USB die `companion_radio_usb`- und fuer Bluetooth die Companion-BLE-Firmware, jeweils nicht im KISS-Modus.

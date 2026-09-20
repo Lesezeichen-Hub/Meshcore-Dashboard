@@ -113,6 +113,8 @@ const state = {
   networkMapSignature: "",
   roomSessions: new Set(),
   pendingRoomLogin: null,
+  roomLoginTimer: null,
+  roomStatus: null,
   dmTarget: null,
   unreadChannels: new Map(),
   ackResults: new Map(),
@@ -214,6 +216,7 @@ const el = {
   roomPasswordInput: document.querySelector("#roomPasswordInput"),
   roomLoginSubmitBtn: document.querySelector("#roomLoginSubmitBtn"),
   closeRoomLoginBtn: document.querySelector("#closeRoomLoginBtn"),
+  roomSessionStatus: document.querySelector("#roomSessionStatus"),
 };
 
 applyTheme(loadTheme());
@@ -625,8 +628,11 @@ function handleBluetoothDisconnected() {
   state.transport = null;
   rejectPendingWaiters(new Error("Bluetooth-Verbindung getrennt."));
   clearPendingPings();
+  if (state.roomSessions.size || state.pendingRoomLogin) setRoomStatus("error", "Room-Verbindung durch Bluetooth-Trennung beendet.");
   state.roomSessions.clear();
   state.pendingRoomLogin = null;
+  clearTimeout(state.roomLoginTimer);
+  state.roomLoginTimer = null;
   failPendingMessages("Bluetooth-Verbindung getrennt.");
   state.bluetoothTx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
   state.bluetoothDevice?.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
@@ -644,8 +650,11 @@ async function disconnect() {
   state.transport = null;
   rejectPendingWaiters(new Error("Verbindung getrennt."));
   clearPendingPings();
+  if (state.roomSessions.size || state.pendingRoomLogin) setRoomStatus("error", "Room-Verbindung getrennt.");
   state.roomSessions.clear();
   state.pendingRoomLogin = null;
+  clearTimeout(state.roomLoginTimer);
+  state.roomLoginTimer = null;
   failPendingMessages("Verbindung getrennt.");
   try {
     if (state.reader) {
@@ -1144,13 +1153,20 @@ async function loginToRoomServer(event) {
   payload.set(hexToBytes(pending.contact.key), 1);
   payload.set(password, 33);
   pending.awaitingResult = true;
+  setRoomStatus("pending", `Anmeldung bei ${pending.contact.name} laeuft...`);
   el.roomLoginSubmitBtn.disabled = true;
   try {
-    await sendAndWait(payload, [RESP.SENT], 8000);
+    const response = await sendAndWait(payload, [RESP.SENT], 8000);
     el.roomLoginDialog.close();
     showActionNotice(`Login an ${pending.contact.name} gesendet.`);
+    if (state.pendingRoomLogin === pending) {
+      const suggestedTimeout = readU32(response, 6) || 30000;
+      clearTimeout(state.roomLoginTimer);
+      state.roomLoginTimer = setTimeout(() => parseRoomLoginResult(new Uint8Array(), false), Math.min(120000, Math.max(10000, suggestedTimeout + 5000)));
+    }
   } catch (error) {
     pending.awaitingResult = false;
+    setRoomStatus("error", `Room-Login bei ${pending.contact.name} fehlgeschlagen: ${error.message}`);
     showActionNotice(`Room-Login fehlgeschlagen: ${error.message}`, "error");
   } finally {
     el.roomLoginSubmitBtn.disabled = false;
@@ -1158,6 +1174,8 @@ async function loginToRoomServer(event) {
 }
 
 function parseRoomLoginResult(data, success) {
+  clearTimeout(state.roomLoginTimer);
+  state.roomLoginTimer = null;
   const pending = state.pendingRoomLogin;
   const prefix = success && data.length >= 8 ? sliceHex(data, 2, 8) : pending?.contact?.prefix;
   const contact = [...state.contacts.values()].find((item) => item.prefix === prefix) || pending?.contact;
@@ -1165,13 +1183,22 @@ function parseRoomLoginResult(data, success) {
   if (success) {
     state.roomSessions.add(contact.prefix);
     state.pendingRoomLogin = null;
+    setRoomStatus("success", `Verbunden mit Room ${contact.name}. Nachrichten erscheinen in diesem Room-Tab.`);
     showActionNotice(`Room ${contact.name} verbunden.`);
     openRoomConversation(contact);
   } else {
     state.pendingRoomLogin = null;
+    setRoomStatus("error", `Login bei ${contact.name} fehlgeschlagen oder Zeitlimit erreicht.`);
     showActionNotice(`Login bei ${contact.name} abgelehnt oder Zeitlimit erreicht.`, "error");
     renderContacts();
   }
+}
+
+function setRoomStatus(status, text) {
+  state.roomStatus = { status, text };
+  el.roomSessionStatus.hidden = false;
+  el.roomSessionStatus.dataset.state = status;
+  el.roomSessionStatus.textContent = text;
 }
 
 function openRoomConversation(contact) {
@@ -1584,7 +1611,9 @@ function renderContacts() {
 
 function renderChannelTabs() {
   const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
-  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: "DM" }, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
+  const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
+  const dmLabel = dmContact?.type === 3 && state.roomSessions.has(dmContact.prefix) ? `Room: ${dmContact.name}` : "DM";
+  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: dmLabel }, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
   const totalUnread = [...state.unreadChannels.values()].reduce((total, count) => total + Number(count || 0), 0);
   el.channelTabs.innerHTML = tabs.map((tab) => {
     const unreadCount = tab.key === "all" ? totalUnread : Number(state.unreadChannels.get(tab.key) || 0);
