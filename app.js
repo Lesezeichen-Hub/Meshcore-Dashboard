@@ -95,12 +95,17 @@ const state = {
   messageDirectionFilter: "all",
   messageKindFilter: "all",
   favoriteContacts: loadFavoriteContacts(),
-  packetStats: { total: 0, errors: 0, unknown: 0, byType: new Map() },
+  packetStats: createPacketStats(),
+  rangeRecords: loadRangeRecords(),
+  mapOptions: { colorMode: "type", lines: false, heat: false, clients: true, repeaters: true, other: true },
+  networkView: "map",
   selfLat: null,
   selfLon: null,
   installPrompt: null,
   networkMap: null,
   networkMarkerLayer: null,
+  networkLineLayer: null,
+  networkHeatLayer: null,
   networkMapBounds: null,
   networkMapSignature: "",
   dmTarget: null,
@@ -188,6 +193,15 @@ const el = {
   importConfigBtn: document.querySelector("#importConfigBtn"),
   importConfigInput: document.querySelector("#importConfigInput"),
   installAppBtn: document.querySelector("#installAppBtn"),
+  mapColorMode: document.querySelector("#mapColorMode"),
+  mapLinesToggle: document.querySelector("#mapLinesToggle"),
+  mapHeatToggle: document.querySelector("#mapHeatToggle"),
+  mapClientsToggle: document.querySelector("#mapClientsToggle"),
+  mapRepeatersToggle: document.querySelector("#mapRepeatersToggle"),
+  mapOtherToggle: document.querySelector("#mapOtherToggle"),
+  networkGraph: document.querySelector("#networkGraph"),
+  fullscreenMapBtn: document.querySelector("#fullscreenMapBtn"),
+  resetPacketStatsBtn: document.querySelector("#resetPacketStatsBtn"),
 };
 
 applyTheme(loadTheme());
@@ -334,6 +348,25 @@ el.importConfigBtn.addEventListener("click", () => el.importConfigInput.click())
 el.importConfigInput.addEventListener("change", importConfiguration);
 el.installAppBtn.addEventListener("click", installDashboard);
 el.fitNetworkMapBtn.addEventListener("click", fitNetworkMap);
+document.querySelectorAll("[data-network-view]").forEach((button) => button.addEventListener("click", () => setNetworkView(button.dataset.networkView)));
+el.mapColorMode.addEventListener("change", () => updateMapOption("colorMode", el.mapColorMode.value));
+el.mapLinesToggle.addEventListener("change", () => updateMapOption("lines", el.mapLinesToggle.checked));
+el.mapHeatToggle.addEventListener("change", () => updateMapOption("heat", el.mapHeatToggle.checked));
+el.mapClientsToggle.addEventListener("change", () => updateMapOption("clients", el.mapClientsToggle.checked));
+el.mapRepeatersToggle.addEventListener("change", () => updateMapOption("repeaters", el.mapRepeatersToggle.checked));
+el.mapOtherToggle.addEventListener("change", () => updateMapOption("other", el.mapOtherToggle.checked));
+el.fullscreenMapBtn.addEventListener("click", toggleNetworkFullscreen);
+el.resetPacketStatsBtn.addEventListener("click", () => {
+  state.packetStats = createPacketStats();
+  renderPacketDiagnostics();
+});
+document.addEventListener("fullscreenchange", () => {
+  const section = el.networkMap.closest(".map-section");
+  const active = document.fullscreenElement === section;
+  section.classList.toggle("network-panel-fullscreen", active);
+  el.fullscreenMapBtn.textContent = active ? "Vollbild beenden" : "Vollbild";
+  setTimeout(() => state.networkMap?.invalidateSize(), 100);
+});
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   state.installPrompt = event;
@@ -867,7 +900,7 @@ function ingestBytes(bytes) {
 function handlePacket(data) {
   if (!data.length) return;
   const code = data[0];
-  recordPacket(code);
+  recordPacket(code, data);
   log(`RX ${packetName(code)} ${toHex(data)}`);
 
   const waiterIndex = state.waiters.findIndex((waiter) => waiter.responseCodes.includes(code) || code === RESP.ERROR);
@@ -1103,13 +1136,17 @@ function formatPathHashes(pathLenRaw, rawBytes) {
 }
 
 function formatRepeaterHash(hash) {
-  const normalized = hash.toLowerCase();
-  const matches = [...state.contacts.values()].filter(
-    (contact) => contact.type === 2 && contact.key?.toLowerCase().startsWith(normalized),
-  );
+  const matches = resolveRepeaterHash(hash);
   if (matches.length === 1) return `${matches[0].name} (${hash})`;
   if (matches.length > 1) return `${hash} [${matches.map((contact) => contact.name).join(" / ")}]`;
   return hash;
+}
+
+function resolveRepeaterHash(hash) {
+  const normalized = hash.toLowerCase();
+  return [...state.contacts.values()].filter(
+    (contact) => contact.type === 2 && contact.key?.toLowerCase().startsWith(normalized),
+  );
 }
 
 function findChannelByName(name) {
@@ -2534,13 +2571,14 @@ function getReferenceLocation() {
 
 function renderNetworkOverview() {
   renderNetworkMap();
+  renderNetworkGraph();
   renderRouteOverview();
   renderRangeStats();
   renderPacketDiagnostics();
 }
 
 function renderNetworkMap() {
-  const contacts = [...state.contacts.values()].filter(hasValidPosition);
+  const contacts = [...state.contacts.values()].filter((contact) => hasValidPosition(contact) && isContactTypeVisible(contact));
   const self = getReferenceLocation();
   const nodes = self ? [self, ...contacts] : contacts;
   el.mappedContactCount.textContent = `${contacts.length} Position${contacts.length === 1 ? "" : "en"}`;
@@ -2572,14 +2610,18 @@ function renderNetworkMap() {
       ? L.markerClusterGroup({ showCoverageOnHover: false, spiderfyOnMaxZoom: true, maxClusterRadius: 42 })
       : L.layerGroup();
     state.networkMarkerLayer.addTo(state.networkMap);
+    state.networkLineLayer = L.layerGroup().addTo(state.networkMap);
+    state.networkHeatLayer = L.layerGroup().addTo(state.networkMap);
   }
 
   state.networkMarkerLayer.clearLayers();
+  state.networkLineLayer.clearLayers();
+  state.networkHeatLayer.clearLayers();
   const bounds = [];
   for (const node of nodes) {
     const lat = node.lat / 1e6;
     const lon = node.lon / 1e6;
-    const typeClass = node.self ? "self" : node.type === 2 ? "repeater" : "client";
+    const typeClass = getMapMarkerClass(node);
     const marker = L.marker([lat, lon], {
       title: node.name,
       icon: L.divIcon({ className: `mesh-map-marker ${typeClass}`, iconSize: [18, 18], iconAnchor: [9, 9] }),
@@ -2589,6 +2631,13 @@ function renderNetworkMap() {
     marker.bindPopup(`<strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(TYPE_NAMES[node.type] || route)}</span><span>${escapeHtml(route)} | ${escapeHtml(signal)}</span><span>${lat.toFixed(5)}, ${lon.toFixed(5)}</span>`);
     marker.bindTooltip(node.name, { direction: "top", offset: [0, -10] });
     state.networkMarkerLayer.addLayer(marker);
+    if (!node.self && self && state.mapOptions.lines) {
+      L.polyline([[self.lat / 1e6, self.lon / 1e6], [lat, lon]], { color: "#57d7a0", weight: 1.5, opacity: 0.45 }).addTo(state.networkLineLayer);
+    }
+    if (!node.self && state.mapOptions.heat) {
+      const activity = Math.max(1, getContactMessageCount(node));
+      L.circle([lat, lon], { radius: Math.min(60000, 5000 + activity * 2500), stroke: false, fillColor: "#ff6b6b", fillOpacity: Math.min(0.38, 0.1 + activity / 50) }).addTo(state.networkHeatLayer);
+    }
     bounds.push([lat, lon]);
   }
 
@@ -2600,6 +2649,102 @@ function renderNetworkMap() {
     fitNetworkMap();
   }
   setTimeout(() => state.networkMap?.invalidateSize(), 0);
+}
+
+function isContactTypeVisible(contact) {
+  if (contact.type === 1) return state.mapOptions.clients;
+  if (contact.type === 2) return state.mapOptions.repeaters;
+  return state.mapOptions.other;
+}
+
+function getMapMarkerClass(node) {
+  if (node.self) return "self";
+  const typeClass = node.type === 2 ? "repeater" : "client";
+  if (state.mapOptions.colorMode === "signal") {
+    return `${typeClass} ${node.lastSnr == null ? "inactive" : node.lastSnr >= 5 ? "signal-good" : node.lastSnr >= -5 ? "signal-medium" : "signal-poor"}`;
+  }
+  if (state.mapOptions.colorMode === "hops") {
+    const hops = node.outPathLenRaw == null ? null : node.outPathLenRaw & 0x3f;
+    return `${typeClass} ${hops == null ? "inactive" : hops <= 1 ? "signal-good" : hops <= 3 ? "signal-medium" : "signal-poor"}`;
+  }
+  if (state.mapOptions.colorMode === "activity") {
+    const seen = Math.max(node.lastSeen || 0, node.lastAdvert || 0);
+    const age = Date.now() / 1000 - seen;
+    return `${typeClass} ${!seen || age > 86400 ? "inactive" : age < 3600 ? "signal-good" : "signal-medium"}`;
+  }
+  return typeClass;
+}
+
+function getContactMessageCount(contact) {
+  return state.messages.filter((message) => message.prefix === contact.prefix || String(message.text || "").toLowerCase().startsWith(`${contact.name.toLowerCase()}:`)).length;
+}
+
+function updateMapOption(name, value) {
+  state.mapOptions[name] = value;
+  renderNetworkMap();
+}
+
+function setNetworkView(view) {
+  state.networkView = view === "graph" ? "graph" : "map";
+  el.networkMap.hidden = state.networkView !== "map";
+  el.networkGraph.hidden = state.networkView !== "graph";
+  el.fitNetworkMapBtn.hidden = state.networkView !== "map";
+  document.querySelectorAll("[data-network-view]").forEach((button) => button.classList.toggle("active", button.dataset.networkView === state.networkView));
+  if (state.networkView === "map") setTimeout(() => state.networkMap?.invalidateSize(), 0);
+}
+
+async function toggleNetworkFullscreen() {
+  const section = el.networkMap.closest(".map-section");
+  if (!document.fullscreenElement) await section.requestFullscreen();
+  else await document.exitFullscreen();
+  section.classList.toggle("network-panel-fullscreen", Boolean(document.fullscreenElement));
+  setTimeout(() => state.networkMap?.invalidateSize(), 100);
+}
+
+function renderNetworkGraph() {
+  const contacts = [...state.contacts.values()];
+  if (!contacts.length) {
+    el.networkGraph.innerHTML = '<span class="empty">Noch keine Kontakte.</span>';
+    return;
+  }
+  const ringCount = Math.max(1, Math.ceil(contacts.length / 24));
+  const outerRadius = 125 + (ringCount - 1) * 72;
+  const width = Math.max(900, outerRadius * 2 + 180);
+  const height = Math.max(520, outerRadius * 2 + 180);
+  const center = { x: width / 2, y: height / 2 };
+  const usage = getRepeaterUsage();
+  const maxUsage = Math.max(0, ...usage.values());
+  const points = contacts.map((contact, index) => {
+    const ring = Math.floor(index / 24);
+    const indexInRing = index % 24;
+    const ringCount = Math.min(24, contacts.length - ring * 24);
+    const radius = 125 + ring * 72;
+    return {
+      contact,
+      x: center.x + Math.cos((indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2) * radius,
+      y: center.y + Math.sin((indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2) * radius,
+    };
+  });
+  const pointByKey = new Map(points.map((point) => [point.contact.key, point]));
+  const edgeKeys = new Set();
+  const edgeParts = [];
+  for (const target of points) {
+    const hashes = formatPathHashes(target.contact.outPathLenRaw, target.contact.outPathRaw).hashes;
+    const knownRepeaters = hashes.map((hash) => ({ hash, matches: resolveRepeaterHash(hash) })).filter((entry) => entry.matches.length === 1).map((entry) => ({ hash: entry.hash, point: pointByKey.get(entry.matches[0].key) })).filter((entry) => entry.point);
+    const chain = [{ point: { x: center.x, y: center.y }, hash: null }, ...knownRepeaters, { point: target, hash: null }];
+    for (let index = 1; index < chain.length; index += 1) {
+      const from = chain[index - 1];
+      const to = chain[index];
+      const edgeKey = `${from.point.contact?.key || "origin"}:${to.point.contact?.key || target.contact.key}`;
+      if (edgeKeys.has(edgeKey)) continue;
+      edgeKeys.add(edgeKey);
+      const frequent = to.hash && (usage.get(to.hash) || 0) === maxUsage && maxUsage > 1;
+      edgeParts.push(`<line class="graph-edge${frequent ? " frequent" : ""}" x1="${from.point.x.toFixed(1)}" y1="${from.point.y.toFixed(1)}" x2="${to.point.x.toFixed(1)}" y2="${to.point.y.toFixed(1)}"><title>${escapeHtml(target.contact.name)}: ${hashes.map(formatRepeaterHash).join(" -> ") || "direkt"}</title></line>`);
+    }
+  }
+  const edges = edgeParts.join("");
+  const nodes = points.map((point) => `<g class="graph-node${point.contact.type === 2 ? " repeater" : ""}" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="12"><title>${escapeHtml(point.contact.name)}</title></circle><text y="27">${escapeHtml(point.contact.name.slice(0, 18))}</text></g>`).join("");
+  el.networkGraph.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Netzwerkgraph"><g class="graph-node origin" transform="translate(${center.x} ${center.y})"><circle r="18"></circle><text y="34">Eigener Node</text></g>${edges}${nodes}</svg>`;
 }
 
 function fitNetworkMap() {
@@ -2618,12 +2763,47 @@ function renderRouteOverview() {
     el.routeOverview.textContent = "Noch keine Routendaten.";
     return;
   }
+  const usage = getRepeaterUsage();
+  const maxUsage = Math.max(0, ...usage.values());
   el.routeOverview.className = "network-list";
   el.routeOverview.innerHTML = contacts.map((contact) => {
     const path = formatPathHashes(contact.outPathLenRaw, contact.outPathRaw);
-    const detail = path.hashes.length ? path.hashes.map(formatRepeaterHash).join(" -> ") : formatContactRoute(contact.outPathLen);
-    return `<div class="route-row"><strong>${escapeHtml(contact.name)}</strong><span class="meta">${escapeHtml(detail)}</span></div>`;
+    const hopStats = getContactHopStats(contact);
+    const chain = ["Eigener Node", ...path.hashes, contact.name];
+    const chainHtml = chain.map((part, index) => {
+      if (index === 0 || index === chain.length - 1) return `<span class="route-node">${escapeHtml(part)}</span>`;
+      const matches = resolveRepeaterHash(part);
+      const label = matches.length === 1 ? matches[0].name : part;
+      const frequent = (usage.get(part) || 0) === maxUsage && maxUsage > 1;
+      return `<span class="route-node${frequent ? " frequent" : ""}" title="${usage.get(part) || 0} bekannte Routen">${escapeHtml(label)}</span>`;
+    }).join('<span aria-hidden="true">&#8594;</span>');
+    const detail = hopStats.count ? `Hops Ø ${formatNumber(hopStats.average, 1)}, max. ${hopStats.max}` : `${path.hops} bekannte Pfad-Hops`;
+    return `<div class="route-row"><strong>${escapeHtml(contact.name)}</strong><span class="meta">${escapeHtml(detail)}</span><div class="route-chain">${chainHtml}</div></div>`;
   }).join("");
+}
+
+function getContactHopStats(contact) {
+  const values = state.messages.filter((message) => {
+    if (message.pathLen == null || message.outgoing) return false;
+    if (message.prefix) return message.prefix === contact.prefix;
+    const sender = String(message.text || "").split(":", 1)[0].trim().toLowerCase();
+    return sender && sender === contact.name.toLowerCase();
+  }).map((message) => message.pathLen === 0xff ? 0 : message.pathLen & 0x3f);
+  return {
+    count: values.length,
+    average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0,
+    max: values.length ? Math.max(...values) : 0,
+  };
+}
+
+function getRepeaterUsage() {
+  const usage = new Map();
+  for (const contact of state.contacts.values()) {
+    for (const hash of formatPathHashes(contact.outPathLenRaw, contact.outPathRaw).hashes) {
+      usage.set(hash, (usage.get(hash) || 0) + 1);
+    }
+  }
+  return usage;
 }
 
 function renderRangeStats() {
@@ -2632,6 +2812,7 @@ function renderRangeStats() {
   const rssiValues = messages.map((message) => Number(message.rssi)).filter(Number.isFinite);
   const hopValues = state.messages.map((message) => message.pathLen == null ? null : (message.pathLen === 0xff ? 0 : message.pathLen & 0x3f)).filter(Number.isFinite);
   const rangeDistance = getRangeDistance();
+  updateRangeRecord(rangeDistance);
   if (!snrValues.length && !rssiValues.length && !hopValues.length && !rangeDistance) {
     el.rangeStats.className = "stat-grid empty";
     el.rangeStats.textContent = "Noch keine Funkdaten.";
@@ -2643,9 +2824,31 @@ function renderRangeStats() {
     ["Mittlere SNR", snrValues.length ? `${formatNumber(average(snrValues), 1)} dB` : "-"],
     ["Mittlere RSSI", rssiValues.length ? `${formatNumber(average(rssiValues), 0)} dBm` : "-"],
     ["Maximale Hops", hopValues.length ? String(Math.max(...hopValues)) : "-"],
+    ["Reichweitenrekord", state.rangeRecords[0] ? `${state.rangeRecords[0].label} (${formatNumber(state.rangeRecords[0].distance, 1)} km)` : "-"],
   ];
   el.rangeStats.className = "stat-grid";
-  el.rangeStats.innerHTML = stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  const history = state.rangeRecords.slice(0, 5).map((record) => `<div><span>${escapeHtml(new Date(record.recordedAt).toLocaleDateString("de-DE"))}</span><strong>${escapeHtml(record.label)} - ${record.approximate ? "ca. " : ""}${formatNumber(record.distance, 1)} km</strong></div>`).join("");
+  el.rangeStats.innerHTML = `${stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}${history ? `<div class="range-record-list"><span>Rekordverlauf</span>${history}</div>` : ""}`;
+}
+
+function loadRangeRecords() {
+  try {
+    const records = JSON.parse(localStorage.getItem("meshcore-dashboard-range-records") || "[]");
+    return Array.isArray(records) ? records.slice(0, 20) : [];
+  } catch {
+    return [];
+  }
+}
+
+function updateRangeRecord(result) {
+  if (!result || !Number.isFinite(result.distance)) return;
+  const current = state.rangeRecords[0];
+  if (current && current.distance >= result.distance) return;
+  state.rangeRecords.unshift({ label: result.label, distance: result.distance, approximate: Boolean(result.approximate), recordedAt: new Date().toISOString() });
+  state.rangeRecords = state.rangeRecords.sort((a, b) => b.distance - a.distance).slice(0, 20);
+  try {
+    localStorage.setItem("meshcore-dashboard-range-records", JSON.stringify(state.rangeRecords));
+  } catch {}
 }
 
 function getRangeDistance() {
@@ -2684,20 +2887,51 @@ function distanceKm(latA, lonA, latB, lonB) {
   return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
-function recordPacket(code) {
-  state.packetStats.total += 1;
-  state.packetStats.byType.set(code, (state.packetStats.byType.get(code) || 0) + 1);
+function createPacketStats() {
+  return { total: 0, bytes: 0, errors: 0, unknown: 0, duplicates: 0, startedAt: Date.now(), byType: new Map(), events: [], fingerprints: new Map() };
+}
+
+function recordPacket(code, data) {
+  const stats = state.packetStats;
+  const now = Date.now();
+  const fingerprint = toHex(data);
+  const previous = stats.fingerprints.get(fingerprint);
+  if (previous && now - previous < 10000) stats.duplicates += 1;
+  stats.fingerprints.set(fingerprint, now);
+  for (const [key, timestamp] of stats.fingerprints) {
+    if (now - timestamp > 10000) stats.fingerprints.delete(key);
+  }
+  stats.total += 1;
+  stats.bytes += data.length;
+  stats.byType.set(code, (stats.byType.get(code) || 0) + 1);
+  stats.events.unshift({ time: now, code, bytes: data.length });
+  stats.events = stats.events.slice(0, 60);
 }
 
 function renderPacketDiagnostics() {
-  const topType = [...state.packetStats.byType.entries()].sort((a, b) => b[1] - a[1])[0];
+  const packetStats = state.packetStats;
+  const elapsedMinutes = Math.max((Date.now() - packetStats.startedAt) / 60000, 1 / 60);
+  const outgoing = state.messages.filter((message) => message.kind === "out" || message.outgoing);
+  const confirmed = outgoing.filter((message) => getDeliveryStatus(message) === "confirmed");
+  const failed = outgoing.filter((message) => getDeliveryStatus(message) === "failed");
+  const roundTrips = outgoing.map((message) => Number(message.roundTrip)).filter(Number.isFinite);
+  const ackTotal = confirmed.length + failed.length;
+  const averageRoundTrip = roundTrips.length ? roundTrips.reduce((sum, value) => sum + value, 0) / roundTrips.length : null;
   const stats = [
-    ["RX gesamt", String(state.packetStats.total)],
-    ["Fehler", String(state.packetStats.errors)],
-    ["Unbekannt", String(state.packetStats.unknown)],
-    ["Haeufigster Typ", topType ? `${packetName(topType[0])} (${topType[1]})` : "-"],
+    ["RX gesamt", String(packetStats.total)],
+    ["Pakete/min", formatNumber(packetStats.total / elapsedMinutes, 1)],
+    ["Datenmenge", `${formatNumber(packetStats.bytes / 1024, 1)} KB`],
+    ["Fehlerquote", packetStats.total ? `${formatNumber((packetStats.errors / packetStats.total) * 100, 1)}%` : "0%"],
+    ["ACK-Erfolg", ackTotal ? `${formatNumber((confirmed.length / ackTotal) * 100, 0)}%` : "-"],
+    ["Ø Roundtrip", averageRoundTrip == null ? "-" : `${formatNumber(averageRoundTrip, 0)} ms`],
+    ["Duplikate", String(packetStats.duplicates)],
+    ["Unbekannte Typen", String(packetStats.unknown)],
   ];
-  el.packetDiagnostics.innerHTML = stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  const types = [...packetStats.byType.entries()].sort((a, b) => b[1] - a[1]);
+  const maxCount = Math.max(1, ...types.map(([, count]) => count));
+  const typeHtml = types.length ? types.map(([code, count]) => `<div class="packet-type-row"><span>${escapeHtml(packetName(code))}</span><span class="packet-bar"><span style="width:${(count / maxCount) * 100}%"></span></span><strong>${count}</strong></div>`).join("") : '<span class="empty">Noch keine Pakete.</span>';
+  const eventHtml = packetStats.events.length ? packetStats.events.map((event) => `<div class="packet-event"><span>${new Date(event.time).toLocaleTimeString()}</span><span>${escapeHtml(packetName(event.code))}</span><span>${event.bytes} B</span></div>`).join("") : '<span class="empty">Noch keine Paketereignisse.</span>';
+  el.packetDiagnostics.innerHTML = `<div class="packet-summary">${stats.map(([label, value]) => `<div class="stat-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div><div><h4>Pakettypen</h4><div class="packet-type-list">${typeHtml}</div></div><div><h4>Letzte Pakete</h4><div class="packet-events">${eventHtml}</div></div>`;
 }
 
 function exportConfiguration() {

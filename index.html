@@ -174,9 +174,30 @@
             <section class="network-section map-section">
               <div class="network-section-head">
                 <h3>Netzkarte</h3>
-                <button id="fitNetworkMapBtn" type="button" class="secondary" disabled>Alle zeigen</button>
+                <div class="map-view-actions">
+                  <div class="segmented-control" aria-label="Netzwerkansicht">
+                    <button type="button" class="secondary active" data-network-view="map">Karte</button>
+                    <button type="button" class="secondary" data-network-view="graph">Graph</button>
+                  </div>
+                  <button id="fitNetworkMapBtn" type="button" class="secondary" disabled>Alle zeigen</button>
+                  <button id="fullscreenMapBtn" type="button" class="secondary">Vollbild</button>
+                </div>
+              </div>
+              <div class="map-layer-controls" aria-label="Kartenebenen">
+                <select id="mapColorMode" aria-label="Marker-Darstellung">
+                  <option value="type">Node-Typ</option>
+                  <option value="signal">Signal</option>
+                  <option value="hops">Hops</option>
+                  <option value="activity">Aktivitaet</option>
+                </select>
+                <label><input id="mapLinesToggle" type="checkbox"> Verbindungslinien</label>
+                <label><input id="mapHeatToggle" type="checkbox"> Heatmap</label>
+                <label><input id="mapClientsToggle" type="checkbox" checked> Clients</label>
+                <label><input id="mapRepeatersToggle" type="checkbox" checked> Repeater</label>
+                <label><input id="mapOtherToggle" type="checkbox" checked> Sonstige</label>
               </div>
               <div id="networkMap" class="network-map empty">Noch keine Kontakte mit Position.</div>
+              <div id="networkGraph" class="network-graph" hidden></div>
             </section>
             <section class="network-section">
               <h3>Routen</h3>
@@ -186,9 +207,12 @@
               <h3>Reichweite</h3>
               <div id="rangeStats" class="stat-grid empty">Noch keine Funkdaten.</div>
             </section>
-            <section class="network-section">
-              <h3>Paketdiagnose</h3>
-              <div id="packetDiagnostics" class="stat-grid"></div>
+            <section class="network-section packet-section">
+              <div class="network-section-head">
+                <h3>Paketdiagnose</h3>
+                <button id="resetPacketStatsBtn" type="button" class="secondary">Zuruecksetzen</button>
+              </div>
+              <div id="packetDiagnostics" class="packet-diagnostics"></div>
             </section>
           </div>
         </article>

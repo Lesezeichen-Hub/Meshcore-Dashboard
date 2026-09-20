@@ -444,6 +444,57 @@ dd {
   min-height: 32px;
 }
 
+.map-view-actions,
+.map-layer-controls,
+.segmented-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.segmented-control {
+  gap: 0;
+}
+
+.segmented-control button {
+  border-radius: 0;
+}
+
+.segmented-control button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.segmented-control button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.segmented-control button.active {
+  background: var(--accent);
+  color: #09110d;
+}
+
+.map-layer-controls {
+  margin-bottom: 10px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.map-layer-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.map-layer-controls input {
+  min-height: auto;
+}
+
 .network-map {
   min-height: 460px;
   overflow: hidden;
@@ -477,6 +528,135 @@ dd {
 .mesh-map-marker.self {
   background: var(--danger);
   box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.8);
+}
+
+.mesh-map-marker.signal-good { background: #57d7a0; }
+.mesh-map-marker.signal-medium { background: #f3c969; }
+.mesh-map-marker.signal-poor { background: #ff6b6b; }
+.mesh-map-marker.inactive { opacity: 0.45; }
+
+.network-graph {
+  position: relative;
+  min-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #141a18;
+}
+
+.network-graph svg {
+  display: block;
+  width: 100%;
+  min-width: 760px;
+  height: 520px;
+}
+
+.graph-edge {
+  stroke: #52635c;
+  stroke-width: 1.5;
+}
+
+.graph-edge.frequent {
+  stroke: var(--accent-2);
+  stroke-width: 4;
+}
+
+.graph-node circle {
+  fill: var(--panel-2);
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.graph-node.repeater circle { stroke: var(--accent-2); }
+.graph-node.origin circle { stroke: var(--danger); }
+.graph-node text { fill: var(--text); font-size: 11px; text-anchor: middle; }
+
+.route-chain {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.route-node {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.route-node.frequent {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+
+.packet-section {
+  grid-column: 1 / -1;
+}
+
+.packet-diagnostics {
+  display: grid;
+  gap: 14px;
+}
+
+.packet-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.packet-type-list,
+.packet-events {
+  display: grid;
+  gap: 5px;
+}
+
+.packet-type-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) 4fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.packet-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--line);
+}
+
+.packet-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.packet-events {
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.packet-event {
+  display: grid;
+  grid-template-columns: 70px minmax(120px, 1fr) auto;
+  gap: 10px;
+  padding: 5px 7px;
+  background: var(--panel-2);
+}
+
+.network-panel-fullscreen {
+  overflow: auto;
+  background: var(--bg);
+}
+
+.network-panel-fullscreen .network-map,
+.network-panel-fullscreen .network-graph {
+  min-height: calc(100vh - 170px);
 }
 
 .leaflet-popup-content strong,
@@ -528,6 +708,30 @@ dd {
   margin-bottom: 4px;
   color: var(--muted);
   font-size: 11px;
+}
+
+.range-record-list {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 5px;
+  padding-top: 6px;
+}
+
+.range-record-list > span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.range-record-list > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+
+.range-record-list > div span {
+  color: var(--muted);
 }
 
 .favorite-button {
@@ -1153,6 +1357,10 @@ html[data-chat-density="compact"] .message-head button {
 
   .network-map {
     min-height: 360px;
+  }
+
+  .packet-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .details > div {
