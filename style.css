@@ -507,6 +507,38 @@ dd {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.weather-help-note {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+
+.weather-command-list {
+  display: grid;
+  grid-template-columns: minmax(190px, auto) 1fr;
+  gap: 10px 18px;
+  margin: 0;
+}
+
+.weather-command-list dt,
+.weather-command-list dd {
+  margin: 0;
+}
+
+.weather-command-list dd {
+  color: var(--muted);
+}
+
+@media (max-width: 520px) {
+  .weather-command-list {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .weather-command-list dd {
+    margin-bottom: 8px;
+  }
+}
+
 .message.incoming {
   border-left-color: rgba(157, 170, 164, 0.45);
   background: rgba(255, 255, 255, 0.018);

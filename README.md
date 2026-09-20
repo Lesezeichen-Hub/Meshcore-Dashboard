@@ -41,7 +41,7 @@ gemeinsam aktualisiert.
 - eingehende Kanal- und Direktnachrichten anzeigen
 - Kanalnachrichten senden
 - Auto-Pong mit einstellbarer PLZ senden (`@[Name] Pong - x Hops in PLZ`)
-- Wetteransage optional aktivieren: Im Kanal `#wetter` antwortet `wetter <Ort>` mit kurzen Open-Meteo-Daten
+- Wetteransage optional aktivieren: Im Kanal `#wetter` stehen `wetter <Ort>`, `wetter <Ort> heute`, `wetter <Ort> morgen`, `wetter <Ort> 3`, `regen <Ort>` und `wetter hilfe` zur Verfuegung
 - eigenes Advertisement per Button senden
 
 Hinweis: Web Serial und Web Bluetooth sind in Firefox/Safari nicht verfuegbar. Nutze fuer USB die `companion_radio_usb`- und fuer Bluetooth die Companion-BLE-Firmware, jeweils nicht im KISS-Modus.

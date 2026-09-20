@@ -151,6 +151,9 @@ const el = {
   themeToggle: document.querySelector("#themeToggle"),
   autoPongToggle: document.querySelector("#autoPongToggle"),
   weatherToggle: document.querySelector("#weatherToggle"),
+  weatherHelpBtn: document.querySelector("#weatherHelpBtn"),
+  weatherHelpDialog: document.querySelector("#weatherHelpDialog"),
+  closeWeatherHelpBtn: document.querySelector("#closeWeatherHelpBtn"),
   autoPongSettingsBtn: document.querySelector("#autoPongSettingsBtn"),
   autoPongSettingsDialog: document.querySelector("#autoPongSettingsDialog"),
   autoPongSettingsForm: document.querySelector("#autoPongSettingsForm"),
@@ -211,6 +214,8 @@ el.weatherToggle.addEventListener("change", () => {
   }
   showActionNotice(`Wetteransage ${state.weatherEnabled ? "aktiviert" : "deaktiviert"}.`);
 });
+el.weatherHelpBtn.addEventListener("click", () => el.weatherHelpDialog.showModal());
+el.closeWeatherHelpBtn.addEventListener("click", () => el.weatherHelpDialog.close());
 el.autoPongSettingsBtn.addEventListener("click", openAutoPongSettings);
 el.closeAutoPongSettingsBtn.addEventListener("click", () => el.autoPongSettingsDialog.close());
 el.autoPongSettingsForm.addEventListener("submit", (event) => {
@@ -1827,11 +1832,26 @@ function getWeatherRequest(message) {
   const body = text.slice(separator + 1).trim();
   if (!sender || body.startsWith("@[")) return null;
 
+  if (new RegExp(`^${WEATHER_COMMAND}\\s+hilfe$`, "i").test(body)) {
+    return { sender, mode: "help", place: "" };
+  }
+
+  const rainMatch = body.match(/^regen\s+(.{2,80})$/i);
+  if (rainMatch) {
+    return { sender, mode: "rain", place: rainMatch[1].trim().replace(/\s+/g, " ") };
+  }
+
   const match = body.match(new RegExp(`^${WEATHER_COMMAND}\\s+(.{2,80})$`, "i"));
   if (!match) return null;
-  const place = match[1].trim().replace(/\s+/g, " ");
-  if (!place) return null;
-  return { sender, place };
+  let place = match[1].trim().replace(/\s+/g, " ");
+  let mode = "current";
+  const modeMatch = place.match(/\s+(heute|morgen|3)$/i);
+  if (modeMatch) {
+    mode = modeMatch[1].toLowerCase() === "3" ? "three-days" : modeMatch[1].toLowerCase();
+    place = place.slice(0, modeMatch.index).trim();
+  }
+  if (place.length < 2) return null;
+  return { sender, place, mode };
 }
 
 function queueWeatherReply(message) {
@@ -1857,8 +1877,13 @@ async function maybeSendWeatherReply(message) {
   state.weatherCooldowns.set(senderKey, now);
 
   try {
+    if (request.mode === "help") {
+      await sendChannelMessage(message.channel, formatWeatherHelp(request.sender));
+      log(`Wetterhilfe an ${request.sender} gesendet.`);
+      return;
+    }
     const weather = await fetchWeatherSummary(request.place);
-    await sendChannelMessage(message.channel, formatWeatherReply(request.sender, weather));
+    await sendChannelMessage(message.channel, formatWeatherReply(request.sender, weather, request.mode));
     log(`Wetteransage fuer ${request.place} an ${request.sender} gesendet.`);
   } catch (error) {
     log(`Wetteransage fuer ${request.place} fehlgeschlagen: ${error.message}`, "error");
@@ -1885,8 +1910,10 @@ async function fetchWeatherSummary(place) {
   forecastUrl.searchParams.set("latitude", String(location.latitude));
   forecastUrl.searchParams.set("longitude", String(location.longitude));
   forecastUrl.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m");
+  forecastUrl.searchParams.set("hourly", "precipitation_probability,precipitation");
+  forecastUrl.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum");
   forecastUrl.searchParams.set("timezone", "auto");
-  forecastUrl.searchParams.set("forecast_days", "1");
+  forecastUrl.searchParams.set("forecast_days", "3");
 
   const forecast = await fetchJsonWithTimeout(forecastUrl);
   if (!forecast.current) throw new Error("Keine Wetterdaten erhalten.");
@@ -1899,6 +1926,9 @@ async function fetchWeatherSummary(place) {
     precipitation: forecast.current.precipitation,
     weatherCode: forecast.current.weather_code,
     wind: forecast.current.wind_speed_10m,
+    currentTime: forecast.current.time,
+    hourly: forecast.hourly,
+    daily: forecast.daily,
   };
 }
 
@@ -1914,7 +1944,12 @@ async function fetchJsonWithTimeout(url) {
   }
 }
 
-function formatWeatherReply(sender, weather) {
+function formatWeatherReply(sender, weather, mode) {
+  if (mode === "heute") return formatDailyWeatherReply(sender, weather, 0, "Heute");
+  if (mode === "morgen") return formatDailyWeatherReply(sender, weather, 1, "Morgen");
+  if (mode === "three-days") return formatThreeDayWeatherReply(sender, weather);
+  if (mode === "rain") return formatRainReply(sender, weather);
+
   const place = [weather.place, weather.admin].filter(Boolean).join(", ");
   const parts = [
     `${formatNumber(weather.temperature, 0)}C`,
@@ -1924,6 +1959,39 @@ function formatWeatherReply(sender, weather) {
     `Regen ${formatNumber(weather.precipitation, 1)} mm`,
   ].filter(Boolean);
   return trimMessage(`@[${sender}] Wetter ${place}: ${parts.join(", ")}`);
+}
+
+function formatDailyWeatherReply(sender, weather, dayIndex, label) {
+  const daily = weather.daily || {};
+  if (daily.time?.[dayIndex] == null) throw new Error("Keine Tagesprognose erhalten.");
+  const place = [weather.place, weather.admin].filter(Boolean).join(", ");
+  return trimMessage(`@[${sender}] ${label} ${place}: ${weatherCodeLabel(daily.weather_code?.[dayIndex])}, ${formatNumber(daily.temperature_2m_min?.[dayIndex], 0)}-${formatNumber(daily.temperature_2m_max?.[dayIndex], 0)}C, Regen ${formatNumber(daily.precipitation_probability_max?.[dayIndex], 0)}% / ${formatNumber(daily.precipitation_sum?.[dayIndex], 1)} mm`);
+}
+
+function formatThreeDayWeatherReply(sender, weather) {
+  const daily = weather.daily || {};
+  if (!Array.isArray(daily.time) || daily.time.length < 3) throw new Error("Keine 3-Tage-Prognose erhalten.");
+  const days = daily.time.slice(0, 3).map((date, index) => {
+    const weekday = new Intl.DateTimeFormat("de-DE", { weekday: "short", timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`));
+    return `${weekday} ${formatNumber(daily.temperature_2m_min?.[index], 0)}/${formatNumber(daily.temperature_2m_max?.[index], 0)}C ${weatherCodeLabel(daily.weather_code?.[index])} ${formatNumber(daily.precipitation_probability_max?.[index], 0)}%`;
+  });
+  return trimMessage(`@[${sender}] ${weather.place} 3 Tage: ${days.join(" | ")}`);
+}
+
+function formatRainReply(sender, weather) {
+  const hourly = weather.hourly || {};
+  const times = Array.isArray(hourly.time) ? hourly.time : [];
+  const startIndex = Math.max(0, times.findIndex((time) => time >= weather.currentTime));
+  const probabilities = (hourly.precipitation_probability || []).slice(startIndex, startIndex + 6).map(Number).filter(Number.isFinite);
+  const precipitation = (hourly.precipitation || []).slice(startIndex, startIndex + 6).map(Number).filter(Number.isFinite);
+  if (!probabilities.length && !precipitation.length) throw new Error("Keine Regenprognose erhalten.");
+  const maxProbability = probabilities.length ? Math.max(...probabilities) : 0;
+  const total = precipitation.reduce((sum, value) => sum + value, 0);
+  return trimMessage(`@[${sender}] Regen ${weather.place}, naechste 6h: max. ${formatNumber(maxProbability, 0)}%, gesamt ${formatNumber(total, 1)} mm`);
+}
+
+function formatWeatherHelp(sender) {
+  return trimMessage(`@[${sender}] Befehle: wetter <Ort> | wetter <Ort> heute | wetter <Ort> morgen | wetter <Ort> 3 | regen <Ort>`);
 }
 
 function weatherCodeLabel(code) {

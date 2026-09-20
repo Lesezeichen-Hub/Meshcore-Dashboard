@@ -100,11 +100,14 @@
                 </label>
                 <button id="autoPongSettingsBtn" type="button" class="subtle-icon-button" aria-label="Antwortregeln einstellen" title="Antwortregeln einstellen"><span aria-hidden="true">&#9881;</span></button>
               </div>
-              <label class="switch-control" title="Im Kanal #wetter auf wetter Ort antworten">
-                <input id="weatherToggle" type="checkbox">
-                <span class="switch-track" aria-hidden="true"></span>
-                <span>Wetter</span>
-              </label>
+              <div class="auto-pong-control">
+                <label class="switch-control" title="Wetterbefehle im Kanal #wetter beantworten">
+                  <input id="weatherToggle" type="checkbox">
+                  <span class="switch-track" aria-hidden="true"></span>
+                  <span>Wetter</span>
+                </label>
+                <button id="weatherHelpBtn" type="button" class="subtle-icon-button" aria-label="Wetterbefehle anzeigen" title="Wetterbefehle anzeigen"><span aria-hidden="true">?</span></button>
+              </div>
               <label class="switch-control" title="Kompakte Chatansicht">
                 <input id="compactChatToggle" type="checkbox">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -165,6 +168,22 @@
           <button type="submit">Speichern</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="weatherHelpDialog" class="settings-dialog" aria-labelledby="weatherHelpTitle">
+      <div class="dialog-head">
+        <h2 id="weatherHelpTitle">Wetterbefehle</h2>
+        <button id="closeWeatherHelpBtn" type="button" class="secondary dialog-close" aria-label="Wetterbefehle schliessen" title="Schliessen">&times;</button>
+      </div>
+      <p class="weather-help-note">Diese Befehle werden im Kanal <code>#wetter</code> beantwortet:</p>
+      <dl class="weather-command-list">
+        <dt><code>wetter &lt;Ort&gt;</code></dt><dd>Aktuelles Wetter</dd>
+        <dt><code>wetter &lt;Ort&gt; heute</code></dt><dd>Tageswerte</dd>
+        <dt><code>wetter &lt;Ort&gt; morgen</code></dt><dd>Prognose fuer morgen</dd>
+        <dt><code>wetter &lt;Ort&gt; 3</code></dt><dd>Drei-Tage-Ausblick</dd>
+        <dt><code>regen &lt;Ort&gt;</code></dt><dd>Regen der naechsten 6 Stunden</dd>
+        <dt><code>wetter hilfe</code></dt><dd>Kurzinfo im Kanal</dd>
+      </dl>
     </dialog>
 
     <script src="app.js"></script>
