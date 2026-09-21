@@ -684,6 +684,21 @@ async function openUsbPort(port, reconnecting = false) {
     await flushSendQueue();
 }
 
+// Chrome/Edge unter Windows werfen bei device.gatt.connect() häufig transient
+// "NetworkError: Connection attempt failed" - ein erneuter Versuch nach kurzer Pause behebt das meist.
+async function connectGattWithRetry(device, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await device.gatt.connect();
+    } catch (error) {
+      lastError = error;
+      if (i < attempts - 1) await pause(800 * (i + 1));
+    }
+  }
+  throw lastError;
+}
+
 async function connectBluetooth() {
   if (!("bluetooth" in navigator)) {
     const reason = !window.isSecureContext
@@ -712,7 +727,7 @@ async function openBluetoothDevice(device) {
     state.bluetoothDevice = device;
     device.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
     device.addEventListener("gattserverdisconnected", handleBluetoothDisconnected);
-    const server = await device.gatt.connect();
+    const server = await connectGattWithRetry(device);
     state.bluetoothServer = server;
     const service = await server.getPrimaryService(BLE_SERVICE_UUID);
     const rx = await service.getCharacteristic(BLE_RX_UUID);
