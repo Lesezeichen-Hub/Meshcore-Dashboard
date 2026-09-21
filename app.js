@@ -188,6 +188,7 @@ const el = {
   channelSecretInput: document.querySelector("#channelSecretInput"),
   createChannelBtn: document.querySelector("#createChannelBtn"),
   messageInput: document.querySelector("#messageInput"),
+  messageCharCount: document.querySelector("#messageCharCount"),
   emojiPickerBtn: document.querySelector("#emojiPickerBtn"),
   emojiPickerMenu: document.querySelector("#emojiPickerMenu"),
   sendBtn: document.querySelector("#sendBtn"),
@@ -490,6 +491,7 @@ el.channelSelect.addEventListener("change", () => {
 el.clearLogBtn.addEventListener("click", () => {
   el.log.textContent = "";
 });
+el.messageInput.addEventListener("input", updateMessageCharCount);
 el.sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = el.messageInput.value.trim();
@@ -506,6 +508,7 @@ el.sendForm.addEventListener("submit", async (event) => {
       await sendChannelMessage(channel, text);
     }
     el.messageInput.value = "";
+    updateMessageCharCount();
   } catch (error) {
     log(`Nachricht konnte nicht gesendet werden: ${error.message}`, "error");
   }
@@ -601,6 +604,7 @@ el.messages.addEventListener("click", (event) => {
     renderMessages();
     renderChannelTabs();
     el.messageInput.value = `@[${reply.sender}] `;
+    updateMessageCharCount();
     el.messageInput.focus();
     el.messageInput.setSelectionRange(el.messageInput.value.length, el.messageInput.value.length);
     return;
@@ -3140,6 +3144,13 @@ function updateMessageInputPlaceholder() {
   el.messageInput.placeholder = "Nachricht an Kanal";
 }
 
+function updateMessageCharCount() {
+  const maximum = el.messageInput.maxLength;
+  const current = el.messageInput.value.length;
+  el.messageCharCount.textContent = `${current} / ${maximum}`;
+  el.messageCharCount.classList.toggle("limit-reached", current >= maximum);
+}
+
 function insertEmoji(emoji) {
   const start = el.messageInput.selectionStart ?? el.messageInput.value.length;
   const end = el.messageInput.selectionEnd ?? start;
@@ -3149,6 +3160,7 @@ function insertEmoji(emoji) {
     return;
   }
   el.messageInput.value = nextValue;
+  updateMessageCharCount();
   const cursor = start + emoji.length;
   el.messageInput.focus();
   el.messageInput.setSelectionRange(cursor, cursor);

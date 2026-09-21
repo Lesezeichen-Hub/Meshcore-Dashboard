@@ -1272,8 +1272,31 @@ html[data-chat-density="compact"] .message-head button {
   text-decoration: underline;
 }
 
-#messageInput {
+.message-input-wrap {
+  position: relative;
+  flex: 1 1 280px;
   min-width: min(280px, 100%);
+}
+
+#messageInput {
+  width: 100%;
+  padding-right: 62px;
+}
+
+.message-char-count {
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.message-char-count.limit-reached {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .emoji-picker {

@@ -136,7 +136,10 @@
               </label>
               <form id="sendForm" class="send-form">
                 <select id="channelSelect" aria-label="Kanal" disabled></select>
-                <input id="messageInput" type="text" maxlength="150" placeholder="Nachricht an Kanal" disabled>
+                <div class="message-input-wrap">
+                  <input id="messageInput" type="text" maxlength="150" placeholder="Nachricht an Kanal" aria-describedby="messageCharCount" disabled>
+                  <span id="messageCharCount" class="message-char-count" aria-live="polite">0 / 150</span>
+                </div>
                 <div class="emoji-picker">
                   <button id="emojiPickerBtn" type="button" class="secondary emoji-picker-button" aria-label="Emoji auswählen" title="Emoji auswählen" aria-expanded="false" disabled>&#9786;</button>
                   <div id="emojiPickerMenu" class="emoji-picker-menu" aria-label="Emojis" hidden>
