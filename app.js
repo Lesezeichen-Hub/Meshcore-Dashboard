@@ -74,6 +74,7 @@ const PING_ACK_TIMEOUT_MAX_MS = 120000;
 const PING_ACK_TIMEOUT_BUFFER_MS = 10000;
 const AUTO_PONG_COOLDOWN_MS = 15000;
 const RECONNECT_MAX_ATTEMPTS = 8;
+const BLE_OPEN_ATTEMPTS = 4;
 const STORAGE_SCHEMA_VERSION = 2;
 
 migrateStorage();
@@ -688,7 +689,9 @@ async function connectGattWithRetry(device, attempts = 4) {
   let lastError;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await device.gatt.connect();
+      const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
+      if (!server.connected) throw new Error("Bluetooth GATT wurde direkt nach dem Verbinden getrennt.");
+      return server;
     } catch (error) {
       lastError = error;
       try {
@@ -698,6 +701,34 @@ async function connectGattWithRetry(device, attempts = 4) {
     }
   }
   throw lastError;
+}
+
+function isRetryableBluetoothOpenError(error) {
+  const message = error?.message || "";
+  return error?.name === "NetworkError"
+    || error?.name === "InvalidStateError"
+    || /GATT Server is disconnected|Cannot retrieve services|GATT.*disconnected|Bluetooth GATT wurde direkt/i.test(message);
+}
+
+function getBluetoothOpenErrorMessage(error) {
+  if (isRetryableBluetoothOpenError(error)) {
+    return "Bluetooth-Verbindung fehlgeschlagen: Das Geraet hat die GATT-Verbindung sofort getrennt. Bitte MeshCore eingeschaltet und in Reichweite lassen, Windows-Bluetooth-Pairing pruefen und erneut verbinden.";
+  }
+  return `Bluetooth-Verbindung fehlgeschlagen: ${error.message}`;
+}
+
+async function cleanupBluetoothOpenAttempt(device, tx) {
+  try {
+    tx?.removeEventListener("characteristicvaluechanged", handleBluetoothNotification);
+    await tx?.stopNotifications();
+  } catch {}
+  try {
+    if (device?.gatt?.connected) device.gatt.disconnect();
+  } catch {}
+  state.bluetoothServer = null;
+  state.bluetoothRx = null;
+  state.bluetoothTx = null;
+  await pause(500);
 }
 
 async function connectBluetooth() {
@@ -723,7 +754,7 @@ async function connectBluetooth() {
       const pairingRequired = /connection attempt failed/i.test(error.message);
       const message = pairingRequired
         ? "Bluetooth-Verbindung abgewiesen: MeshCore benötigt ein Windows-Bluetooth-Pairing. Gerät in Windows-Einstellungen > Bluetooth & Geräte hinzufügen und den am Gerät angezeigten PIN eingeben; danach erneut verbinden."
-        : `Bluetooth-Verbindung fehlgeschlagen: ${error.message}`;
+        : getBluetoothOpenErrorMessage(error);
       showActionNotice(message, "error");
       log(message, "error");
     }
@@ -735,16 +766,32 @@ async function openBluetoothDevice(device) {
     state.bluetoothDevice = device;
     device.removeEventListener("gattserverdisconnected", handleBluetoothDisconnected);
     device.addEventListener("gattserverdisconnected", handleBluetoothDisconnected);
-    const server = await connectGattWithRetry(device);
-    state.bluetoothServer = server;
-    const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-    const rx = await service.getCharacteristic(BLE_RX_UUID);
-    const tx = await service.getCharacteristic(BLE_TX_UUID);
-    tx.addEventListener("characteristicvaluechanged", handleBluetoothNotification);
-    await tx.startNotifications();
+    let lastError;
+    for (let attempt = 0; attempt < BLE_OPEN_ATTEMPTS; attempt++) {
+      let tx = null;
+      try {
+        const server = await connectGattWithRetry(device, 1);
+        state.bluetoothServer = server;
+        const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+        const rx = await service.getCharacteristic(BLE_RX_UUID);
+        tx = await service.getCharacteristic(BLE_TX_UUID);
+        tx.addEventListener("characteristicvaluechanged", handleBluetoothNotification);
+        await tx.startNotifications();
+        if (!server.connected) throw new Error("Bluetooth GATT wurde direkt nach dem Service-Setup getrennt.");
 
-    state.bluetoothRx = rx;
-    state.bluetoothTx = tx;
+        state.bluetoothRx = rx;
+        state.bluetoothTx = tx;
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        await cleanupBluetoothOpenAttempt(device, tx);
+        if (!isRetryableBluetoothOpenError(error) || attempt === BLE_OPEN_ATTEMPTS - 1) break;
+        await pause(700 * (attempt + 1));
+      }
+    }
+    if (lastError) throw lastError;
+
     state.transport = "bluetooth";
     state.lastTransport = "bluetooth";
     state.connected = true;
