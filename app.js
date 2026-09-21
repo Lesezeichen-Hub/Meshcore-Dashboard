@@ -719,7 +719,14 @@ async function connectBluetooth() {
     });
     await openBluetoothDevice(device);
   } catch (error) {
-    if (error.name !== "NotFoundError") log(`Bluetooth-Verbindung fehlgeschlagen: ${error.message}`, "error");
+    if (error.name !== "NotFoundError") {
+      const pairingRequired = /connection attempt failed/i.test(error.message);
+      const message = pairingRequired
+        ? "Bluetooth-Verbindung abgewiesen: MeshCore benötigt ein Windows-Bluetooth-Pairing. Gerät in Windows-Einstellungen > Bluetooth & Geräte hinzufügen und den am Gerät angezeigten PIN eingeben; danach erneut verbinden."
+        : `Bluetooth-Verbindung fehlgeschlagen: ${error.message}`;
+      showActionNotice(message, "error");
+      log(message, "error");
+    }
     await disconnect();
   }
 }
