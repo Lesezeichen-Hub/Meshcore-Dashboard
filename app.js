@@ -913,11 +913,6 @@ async function readLoop() {
 async function fullSync() {
   if (!state.connected) return;
   log("Synchronisiere Device, Kontakte, Kanaele und Nachrichten.");
-  state.channels.clear();
-  state.contacts.clear();
-  state.contactOrder.clear();
-  state.contactSequence = 0;
-  renderChannels();
   try {
     await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
     await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
@@ -929,14 +924,19 @@ async function fullSync() {
     }
     await sendAndWait([CMD.GET_BATT_AND_STORAGE], [RESP.BATTERY]);
     await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
+    for (const index of state.channels.keys()) {
+      if (index >= state.maxChannels) state.channels.delete(index);
+    }
     for (let index = 0; index < state.maxChannels; index += 1) {
       try {
         await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
       } catch (error) {
         // leere Kanalslots melden einen Fehlercode, das darf den Sync anderer Kanaele nicht abbrechen
+        if (!error.message.includes("Keine Antwort auf GET_CHANNEL")) state.channels.delete(index);
         log(`Kanal ${index} konnte nicht gelesen werden: ${error.message}`, "warn");
       }
     }
+    renderChannels();
     await drainMessages();
     reconnectFavoriteRooms().catch((error) => log(`Room-Wiederanmeldung fehlgeschlagen: ${error.message}`, "error"));
     log("Synchronisierung abgeschlossen.");
