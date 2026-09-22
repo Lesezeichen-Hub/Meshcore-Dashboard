@@ -76,6 +76,8 @@ const AUTO_PONG_COOLDOWN_MS = 15000;
 const RECONNECT_MAX_ATTEMPTS = 8;
 const BLE_OPEN_ATTEMPTS = 4;
 const STORAGE_SCHEMA_VERSION = 2;
+const DEVICE_PROFILE_DB_NAME = "meshcore-dashboard-profiles";
+const DEVICE_PROFILE_DB_VERSION = 2;
 
 migrateStorage();
 
@@ -97,6 +99,11 @@ const state = {
   channels: new Map(),
   revealedChannelSecrets: new Set(),
   messages: loadStoredMessages(),
+  legacyMessages: null,
+  deviceId: "",
+  deviceProfileLoaded: false,
+  deviceProfileLoad: null,
+  channelOrder: [],
   latestContactsSince: 0,
   waiters: [],
   pendingAcks: new Map(),
@@ -158,6 +165,8 @@ const state = {
   flushingQueue: false,
   protocolVersion: null,
 };
+
+state.legacyMessages = state.messages.slice();
 
 const el = {
   supportHint: document.querySelector("#supportHint"),
@@ -458,7 +467,33 @@ el.channelTabs.addEventListener("click", (event) => {
     state.dmTarget = null;
   }
   updateMessageInputPlaceholder();
+  persistDeviceProfile();
   renderMessages();
+  renderChannelTabs();
+});
+el.channelTabs.addEventListener("dragstart", (event) => {
+  const tab = event.target.closest("button[data-channel-index]");
+  if (!tab || !/^\d+$/.test(tab.dataset.channelIndex)) return;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", tab.dataset.channelIndex);
+});
+el.channelTabs.addEventListener("dragover", (event) => {
+  if (event.target.closest("button[data-channel-index]")) event.preventDefault();
+});
+el.channelTabs.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const target = event.target.closest("button[data-channel-index]");
+  const sourceIndex = Number(event.dataTransfer.getData("text/plain"));
+  const targetIndex = Number(target?.dataset.channelIndex);
+  if (!target || !Number.isInteger(sourceIndex) || !Number.isInteger(targetIndex) || sourceIndex === targetIndex) return;
+  const order = ensureChannelOrder();
+  const sourcePosition = order.indexOf(sourceIndex);
+  const targetPosition = order.indexOf(targetIndex);
+  if (sourcePosition < 0 || targetPosition < 0) return;
+  order.splice(sourcePosition, 1);
+  order.splice(targetPosition, 0, sourceIndex);
+  state.channelOrder = order;
+  persistDeviceProfile();
   renderChannelTabs();
 });
 el.channelSelect.addEventListener("change", () => {
@@ -469,6 +504,7 @@ el.channelSelect.addEventListener("change", () => {
       state.dmTarget = state.roomSessions.get(next.slice(5))?.key || null;
       state.unreadChannels.delete(next);
       updateMessageInputPlaceholder();
+      persistDeviceProfile();
       renderMessages();
       renderChannelTabs();
       return;
@@ -476,6 +512,7 @@ el.channelSelect.addEventListener("change", () => {
     if (next === "dm") {
       state.activeChannel = "dm";
       updateMessageInputPlaceholder();
+      persistDeviceProfile();
       renderMessages();
       renderChannelTabs();
       return;
@@ -484,6 +521,7 @@ el.channelSelect.addEventListener("change", () => {
     state.unreadChannels.delete(String(next));
     state.dmTarget = null;
     updateMessageInputPlaceholder();
+    persistDeviceProfile();
     renderMessages();
     renderChannelTabs();
   }
@@ -596,7 +634,7 @@ el.messages.addEventListener("click", (event) => {
     const message = state.messages[Number(channelReplyBtn.dataset.channelReplyIndex)];
     const reply = message ? getChannelReply(message) : null;
     if (!reply) return;
-    state.activeChannel = String(message.channel);
+    state.activeChannel = String(getLocalChannelIndex(message));
     state.dmTarget = null;
     state.unreadChannels.delete(state.activeChannel);
     el.channelSelect.value = state.activeChannel;
@@ -615,7 +653,7 @@ el.messages.addEventListener("click", (event) => {
     const reply = message ? getPingReply(message) : null;
     if (!reply || !state.connected) return;
     pongBtn.disabled = true;
-    sendChannelMessage(message.channel, reply.text).catch((error) => {
+    sendChannelMessage(getLocalChannelIndex(message), reply.text).catch((error) => {
       pongBtn.disabled = false;
       log(`Pong konnte nicht gesendet werden: ${error.message}`, "error");
     });
@@ -633,7 +671,7 @@ el.messages.addEventListener("click", (event) => {
     }
     if (!state.connected) return;
     quickReplyBtn.disabled = true;
-    sendChannelMessage(message.channel, reply.text).catch((error) => {
+    sendChannelMessage(getLocalChannelIndex(message), reply.text).catch((error) => {
       quickReplyBtn.disabled = false;
       log(`Schnellantwort konnte nicht gesendet werden: ${error.message}`, "error");
     });
@@ -916,6 +954,7 @@ async function fullSync() {
   try {
     await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
     await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
+    if (state.deviceProfileLoad) await state.deviceProfileLoad;
     try {
       await sendAndWait(buildDeviceTime(), [RESP.OK]);
     } catch (error) {
@@ -1890,6 +1929,8 @@ function parseSelfInfo(data) {
   const cr = data[57];
   const name = decodeCString(data, 58, data.length - 58) || "(ohne Namen)";
 
+  if (pub && state.deviceId !== pub) state.deviceProfileLoad = loadDeviceProfile(pub);
+
   el.nodeName.textContent = name;
   state.selfName = name === "(ohne Namen)" ? "" : name;
   state.selfLat = lat;
@@ -2066,6 +2107,7 @@ function parseChannelData(data) {
 }
 
 function addMessage(message) {
+  message.id ||= createMessageId();
   state.messages.unshift(message);
   state.messages = state.messages.slice(0, 200);
 
@@ -2100,11 +2142,124 @@ function loadStoredMessages() {
 }
 
 function persistMessages() {
+  if (state.deviceProfileLoaded) {
+    persistDeviceProfile();
+    return;
+  }
   try {
     localStorage.setItem("meshcore-dashboard-messages", JSON.stringify(state.messages.slice(0, 200)));
   } catch (error) {
     // Browser-Speicher kann in privaten Modus oder bei quota limits fehlen.
   }
+}
+
+function openDeviceProfileDb() {
+  if (!window.indexedDB) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DEVICE_PROFILE_DB_NAME, DEVICE_PROFILE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains("profiles")) {
+        request.result.createObjectStore("profiles", { keyPath: "deviceId" });
+      }
+      if (!request.result.objectStoreNames.contains("hashtagMessages")) {
+        request.result.createObjectStore("hashtagMessages", { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadDeviceProfile(deviceId) {
+  if (!deviceId || state.deviceId === deviceId && state.deviceProfileLoaded) return;
+  state.deviceId = deviceId;
+  state.deviceProfileLoaded = false;
+  state.messages = [];
+  state.channelOrder = [];
+  renderMessages();
+  try {
+    const db = await openDeviceProfileDb();
+    const profile = db ? await new Promise((resolve, reject) => {
+      const request = db.transaction("profiles", "readonly").objectStore("profiles").get(deviceId);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    }) : null;
+    const sharedHashtagMessages = db ? await new Promise((resolve, reject) => {
+      const request = db.transaction("hashtagMessages", "readonly").objectStore("hashtagMessages").getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    }) : [];
+    const migrated = localStorage.getItem("meshcore-dashboard-profile-migrated") === "true";
+    if (profile) {
+      state.messages = Array.isArray(profile.messages) ? profile.messages.slice(0, 200) : [];
+      state.channelOrder = Array.isArray(profile.channelOrder) ? profile.channelOrder.map(Number).filter(Number.isInteger) : [];
+      state.activeChannel = profile.activeChannel || "all";
+    } else if (!migrated && state.legacyMessages?.length) {
+      state.messages = state.legacyMessages.slice(0, 200);
+      localStorage.setItem("meshcore-dashboard-profile-migrated", "true");
+    }
+    state.messages = mergeMessages(state.messages, sharedHashtagMessages);
+  } catch (error) {
+    log(`Browserdatenbank konnte nicht geladen werden: ${error.message}`, "warn");
+  }
+  state.deviceProfileLoaded = true;
+  persistDeviceProfile();
+  renderChannels();
+  renderMessages();
+  renderChannelTabs();
+}
+
+async function persistDeviceProfile() {
+  if (!state.deviceProfileLoaded || !state.deviceId) return;
+  try {
+    const db = await openDeviceProfileDb();
+    if (!db) return;
+    const profile = {
+      deviceId: state.deviceId,
+      messages: state.messages.slice(0, 200),
+      channelOrder: state.channelOrder.slice(),
+      activeChannel: state.activeChannel,
+      updatedAt: Date.now(),
+    };
+    await new Promise((resolve, reject) => {
+      const request = db.transaction("profiles", "readwrite").objectStore("profiles").put(profile);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+    const hashtagMessages = state.messages.filter((message) => isHashtagMessage(message));
+    if (hashtagMessages.length) {
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction("hashtagMessages", "readwrite");
+        for (const message of hashtagMessages) transaction.objectStore("hashtagMessages").put(message);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+    }
+  } catch (error) {
+    log(`Browserdatenbank konnte nicht gespeichert werden: ${error.message}`, "warn");
+  }
+}
+
+function mergeMessages(...messageLists) {
+  const messages = new Map();
+  for (const list of messageLists) {
+    for (const message of list || []) {
+      if (message?.id) messages.set(message.id, message);
+    }
+  }
+  return [...messages.values()].sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0)).slice(0, 200);
+}
+
+function isHashtagMessage(message) {
+  return message?.channelSecret && String(message.channelName || "").startsWith("#");
+}
+
+function getLocalChannelIndex(message) {
+  if (message?.channelSecret) {
+    const local = [...state.channels.values()].find((channel) => channel.secret === message.channelSecret);
+    if (local) return local.index;
+  }
+  return message?.channel;
 }
 
 function renderContacts() {
@@ -2155,7 +2310,10 @@ function renderContacts() {
 }
 
 function renderChannelTabs() {
-  const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name).sort((a, b) => a.index - b.index);
+  const visible = [...state.channels.values()].filter((channel) => channel.enabled || channel.name);
+  const order = ensureChannelOrder();
+  const rank = new Map(order.map((index, position) => [index, position]));
+  visible.sort((a, b) => (rank.get(a.index) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.index) ?? Number.MAX_SAFE_INTEGER) || a.index - b.index);
   const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
   const dmLabel = dmContact?.type === 3 && state.roomSessions.has(dmContact.prefix) ? `Room: ${dmContact.name}` : "DM";
   const roomTabs = [...state.roomSessions.entries()].map(([prefix, session]) => ({ key: `room:${prefix}`, label: `Room: ${session.name}${session.admin ? " · Admin" : ""}` }));
@@ -2169,6 +2327,7 @@ function renderChannelTabs() {
         type="button"
         class="channel-tab${state.activeChannel === tab.key ? " active" : ""}${unread ? " unread" : ""}"
         data-channel-index="${escapeHtml(tab.key)}"
+        draggable="${/^\d+$/.test(tab.key)}"
         aria-label="${escapeHtml(tab.label)}${unread ? ", neue Nachrichten" : ""}"
       >
         <span class="tab-label">${escapeHtml(tab.label)}</span>
@@ -2176,6 +2335,17 @@ function renderChannelTabs() {
       </button>
     `;
   }).join("");
+}
+
+function ensureChannelOrder() {
+  const indexes = [...state.channels.values()]
+    .filter((channel) => channel.enabled || channel.name)
+    .map((channel) => channel.index);
+  const known = new Set(indexes);
+  return [
+    ...state.channelOrder.filter((index) => known.has(index)),
+    ...indexes.filter((index) => !state.channelOrder.includes(index)),
+  ];
 }
 
 function renderChannels() {
@@ -2248,9 +2418,10 @@ function renderMessages() {
   const filtered = state.messages.filter((message) => {
     const roomPrefix = state.activeChannel.startsWith("room:") ? state.activeChannel.slice(5) : null;
     const activeChannel = state.channels.get(Number(state.activeChannel));
+    const localChannelIndex = getLocalChannelIndex(message);
     const sameChannelIdentity = message.channelSecret && activeChannel?.secret
       ? message.channelSecret === activeChannel.secret
-      : Number(message.channel) === Number(state.activeChannel);
+      : Number(localChannelIndex) === Number(state.activeChannel);
     const inActiveChannel = state.activeChannel === "all"
       || (roomPrefix && message.kind === "contact" && message.prefix === roomPrefix)
       || (state.activeChannel === "dm" && (message.kind === "contact" || message.outgoing === true) && !state.roomSessions.has(message.prefix))
@@ -2279,7 +2450,8 @@ function renderMessages() {
   el.messages.innerHTML = filtered.slice(0, 30).map((message) => {
     const isDm = message.kind === "contact" || message.outgoing === true;
     const channelName = message.channel == null ? "" : message.channelName || "";
-    const channelLabel = `#${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
+    const localChannelIndex = getLocalChannelIndex(message);
+    const channelLabel = `#${localChannelIndex ?? "?"}${channelName ? ` ${channelName}` : ""}`;
     const contactName = message.prefix
       ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)?.name
       : null;
@@ -2481,7 +2653,7 @@ function persistCollapsedPanels() {
 
 function getPingReply(message) {
   if (message.kind !== "channel" || message.channel == null) return null;
-  const channelName = state.channels.get(message.channel)?.name || "";
+  const channelName = message.channelName || state.channels.get(getLocalChannelIndex(message))?.name || "";
   if (normalizeChannelName(channelName) !== PING_TARGET_CHANNEL) return null;
 
   const text = String(message.text || "");
@@ -2611,7 +2783,7 @@ function failPendingMessages(reason) {
 
 async function retryMessage(message) {
   if (message.kind === "out") {
-    await sendChannelMessage(message.channel, message.text, message);
+    await sendChannelMessage(getLocalChannelIndex(message), message.text, message);
     return;
   }
   if (message.kind === "contact" && message.outgoing) {
@@ -2623,7 +2795,7 @@ async function retryMessage(message) {
 
 function getQuickChannelReply(message) {
   if (message.kind !== "channel" || message.channel == null || message.outgoing === true) return null;
-  const rule = getQuickReplyRule(message.channel);
+  const rule = getQuickReplyRule(getLocalChannelIndex(message));
   if (!rule?.enabled) return null;
 
   const text = String(message.text || "");
@@ -2739,7 +2911,7 @@ async function maybeSendAutoQuickReply(message) {
   if (now - (state.quickReplyCooldowns.get(senderKey) || 0) < AUTO_PONG_COOLDOWN_MS) return;
   state.quickReplyCooldowns.set(senderKey, now);
   try {
-    await sendChannelMessage(message.channel, reply.text);
+    await sendChannelMessage(getLocalChannelIndex(message), reply.text);
     log(`Auto-Schnellantwort an ${reply.sender} gesendet.`);
   } catch (error) {
     log(`Auto-Schnellantwort an ${reply.sender} fehlgeschlagen: ${error.message}`, "error");
@@ -2764,7 +2936,8 @@ function persistHandledQuickReplies() {
 
 function getWeatherRequest(message) {
   if (message.kind !== "channel" || message.channel == null || message.outgoing === true) return null;
-  const channelName = state.channels.get(message.channel)?.name || (message.channel === 0 ? "Public" : "");
+  const localChannelIndex = getLocalChannelIndex(message);
+  const channelName = message.channelName || state.channels.get(localChannelIndex)?.name || (localChannelIndex === 0 ? "Public" : "");
   if (normalizeChannelName(channelName) !== WEATHER_TARGET_CHANNEL) return null;
 
   const text = String(message.text || "");
@@ -2825,17 +2998,17 @@ async function maybeSendWeatherReply(message) {
 
   try {
     if (request.mode === "help") {
-      await sendChannelMessage(message.channel, formatWeatherHelp(request.sender));
+      await sendChannelMessage(getLocalChannelIndex(message), formatWeatherHelp(request.sender));
       log(`Wetterhilfe an ${request.sender} gesendet.`);
       return;
     }
     const weather = await fetchWeatherSummary(request.place);
-    await sendChannelMessage(message.channel, formatWeatherReply(request.sender, weather, request.mode));
+    await sendChannelMessage(getLocalChannelIndex(message), formatWeatherReply(request.sender, weather, request.mode));
     log(`Wetteransage fuer ${request.place} an ${request.sender} gesendet.`);
   } catch (error) {
     log(`Wetteransage fuer ${request.place} fehlgeschlagen: ${error.message}`, "error");
     try {
-      await sendChannelMessage(message.channel, trimMessage(`@[${request.sender}] Wetter fuer ${request.place} gerade nicht verfuegbar.`));
+      await sendChannelMessage(getLocalChannelIndex(message), trimMessage(`Wetter fuer ${request.place} gerade nicht verfuegbar.`));
     } catch (sendError) {
       log(`Wetter-Fehlerantwort konnte nicht gesendet werden: ${sendError.message}`, "error");
     }
@@ -2908,14 +3081,14 @@ function formatWeatherReply(sender, weather, mode) {
     `Wind ${formatNumber(weather.wind, 0)} km/h`,
     `Regen ${formatNumber(weather.precipitation, 1)} mm`,
   ].filter(Boolean);
-  return trimMessage(`@[${sender}] Wetter ${place}: ${parts.join(", ")}`);
+  return trimMessage(`Wetter ${place}: ${parts.join(", ")}`);
 }
 
 function formatDailyWeatherReply(sender, weather, dayIndex, label) {
   const daily = weather.daily || {};
   if (daily.time?.[dayIndex] == null) throw new Error("Keine Tagesprognose erhalten.");
   const place = [weather.place, weather.admin].filter(Boolean).join(", ");
-  return trimMessage(`@[${sender}] ${label} ${place}: ${weatherCodeLabel(daily.weather_code?.[dayIndex])}, ${formatNumber(daily.temperature_2m_min?.[dayIndex], 0)}-${formatNumber(daily.temperature_2m_max?.[dayIndex], 0)}C, Regen ${formatNumber(daily.precipitation_probability_max?.[dayIndex], 0)}% / ${formatNumber(daily.precipitation_sum?.[dayIndex], 1)} mm`);
+  return trimMessage(`${label} ${place}: ${weatherCodeLabel(daily.weather_code?.[dayIndex])}, ${formatNumber(daily.temperature_2m_min?.[dayIndex], 0)}-${formatNumber(daily.temperature_2m_max?.[dayIndex], 0)}C, Regen ${formatNumber(daily.precipitation_probability_max?.[dayIndex], 0)}% / ${formatNumber(daily.precipitation_sum?.[dayIndex], 1)} mm`);
 }
 
 function formatThreeDayWeatherReply(sender, weather) {
@@ -2925,7 +3098,7 @@ function formatThreeDayWeatherReply(sender, weather) {
     const weekday = new Intl.DateTimeFormat("de-DE", { weekday: "short", timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`));
     return `${weekday} ${formatNumber(daily.temperature_2m_min?.[index], 0)}/${formatNumber(daily.temperature_2m_max?.[index], 0)}C ${weatherCodeLabel(daily.weather_code?.[index])} ${formatNumber(daily.precipitation_probability_max?.[index], 0)}%`;
   });
-  return trimMessage(`@[${sender}] ${weather.place} 3 Tage: ${days.join(" | ")}`);
+  return trimMessage(`${weather.place} 3 Tage: ${days.join(" | ")}`);
 }
 
 function formatRainReply(sender, weather) {
@@ -2937,23 +3110,23 @@ function formatRainReply(sender, weather) {
   if (!probabilities.length && !precipitation.length) throw new Error("Keine Regenprognose erhalten.");
   const maxProbability = probabilities.length ? Math.max(...probabilities) : 0;
   const total = precipitation.reduce((sum, value) => sum + value, 0);
-  return trimMessage(`@[${sender}] Regen ${weather.place}, naechste 6h: max. ${formatNumber(maxProbability, 0)}%, gesamt ${formatNumber(total, 1)} mm`);
+  return trimMessage(`Regen ${weather.place}, naechste 6h: max. ${formatNumber(maxProbability, 0)}%, gesamt ${formatNumber(total, 1)} mm`);
 }
 
 function formatWeatherHelp(sender) {
-  return trimMessage(`@[${sender}] wetter <Ort> [heute|morgen|3] | regen <Ort> | zeit <Ort> | sonne <Ort>`);
+  return trimMessage("wetter <Ort> [heute|morgen|3] | regen <Ort> | zeit <Ort> | sonne <Ort>");
 }
 
 function formatLocalTimeReply(sender, weather) {
   const time = new Intl.DateTimeFormat("de-DE", { timeZone: weather.timezone, weekday: "short", hour: "2-digit", minute: "2-digit" }).format(new Date());
-  return trimMessage(`@[${sender}] Zeit ${weather.place}: ${time} (${weather.timezone})`);
+  return trimMessage(`Zeit ${weather.place}: ${time} (${weather.timezone})`);
 }
 
 function formatSunReply(sender, weather) {
   const sunrise = weather.daily?.sunrise?.[0]?.slice(11, 16);
   const sunset = weather.daily?.sunset?.[0]?.slice(11, 16);
   if (!sunrise || !sunset) throw new Error("Keine Sonnendaten erhalten.");
-  return trimMessage(`@[${sender}] Sonne ${weather.place}: Aufgang ${sunrise}, Untergang ${sunset}`);
+  return trimMessage(`Sonne ${weather.place}: Aufgang ${sunrise}, Untergang ${sunset}`);
 }
 
 function weatherCodeLabel(code) {
@@ -3052,7 +3225,7 @@ async function maybeSendAutoPong(message) {
   state.autoPongCooldowns.set(senderKey, now);
 
   try {
-    await sendChannelMessage(message.channel, reply.text);
+    await sendChannelMessage(getLocalChannelIndex(message), reply.text);
     log(`Auto-Pong an ${reply.sender} gesendet.`);
   } catch (error) {
     log(`Auto-Pong an ${reply.sender} fehlgeschlagen: ${error.message}`, "error");
