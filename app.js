@@ -223,6 +223,7 @@ const el = {
   messageSearch: document.querySelector("#messageSearch"),
   messageDirectionFilter: document.querySelector("#messageDirectionFilter"),
   messageKindFilter: document.querySelector("#messageKindFilter"),
+  clearChannelHistoryBtn: document.querySelector("#clearChannelHistoryBtn"),
   networkMap: document.querySelector("#networkMap"),
   fitNetworkMapBtn: document.querySelector("#fitNetworkMapBtn"),
   mappedContactCount: document.querySelector("#mappedContactCount"),
@@ -529,6 +530,7 @@ el.channelSelect.addEventListener("change", () => {
 el.clearLogBtn.addEventListener("click", () => {
   el.log.textContent = "";
 });
+el.clearChannelHistoryBtn.addEventListener("click", clearSelectedHistory);
 el.messageInput.addEventListener("input", updateMessageCharCount);
 el.sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2237,6 +2239,44 @@ async function persistDeviceProfile() {
   } catch (error) {
     log(`Browserdatenbank konnte nicht gespeichert werden: ${error.message}`, "warn");
   }
+}
+
+async function deleteSharedHashtagMessages(ids) {
+  if (!ids.length || !window.indexedDB) return;
+  const db = await openDeviceProfileDb();
+  if (!db) return;
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction("hashtagMessages", "readwrite");
+    for (const id of ids) transaction.objectStore("hashtagMessages").delete(id);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+async function clearSelectedHistory() {
+  const tab = state.activeChannel;
+  const label = tab === "all" ? "den gesamten Nachrichtenverlauf" : "den Verlauf dieses Tabs";
+  if (!confirm(`${label} wirklich löschen?`)) return;
+
+  const removed = state.messages.filter((message) => {
+    if (tab === "all") return true;
+    if (tab === "dm") return message.kind === "contact" || message.outgoing === true;
+    if (tab.startsWith("room:")) return message.kind === "contact" && message.prefix === tab.slice(5);
+    return ["channel", "data", "out"].includes(message.kind) && Number(getLocalChannelIndex(message)) === Number(tab);
+  });
+  state.messages = state.messages.filter((message) => !removed.includes(message));
+  const sharedIds = removed.filter(isHashtagMessage).map((message) => message.id).filter(Boolean);
+  try {
+    await deleteSharedHashtagMessages(sharedIds);
+  } catch (error) {
+    log(`Globale Hashtag-Nachrichten konnten nicht gelöscht werden: ${error.message}`, "warn");
+  }
+  if (tab === "all") state.unreadChannels.clear();
+  else state.unreadChannels.delete(tab);
+  persistMessages();
+  renderMessages();
+  renderChannelTabs();
+  showActionNotice("Nachrichtenverlauf gelöscht.");
 }
 
 function mergeMessages(...messageLists) {

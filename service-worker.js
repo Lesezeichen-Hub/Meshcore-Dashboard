@@ -1,4 +1,4 @@
-const CACHE_NAME = "meshcore-dashboard-v1.14.2";
+const CACHE_NAME = "meshcore-dashboard-v1.15.0";
 const APP_SHELL = ["./", "./index.html", "./style.css", "./app.js", "./manifest.webmanifest", "./icon.svg", "./version.json"];
 
 self.addEventListener("install", (event) => {
