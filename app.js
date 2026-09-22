@@ -913,6 +913,11 @@ async function readLoop() {
 async function fullSync() {
   if (!state.connected) return;
   log("Synchronisiere Device, Kontakte, Kanaele und Nachrichten.");
+  state.channels.clear();
+  state.contacts.clear();
+  state.contactOrder.clear();
+  state.contactSequence = 0;
+  renderChannels();
   try {
     await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
     await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
@@ -957,10 +962,13 @@ function buildDeviceTime() {
 }
 
 async function sendChannelMessage(channelIndex, text, existingMessage = null) {
+  const channel = state.channels.get(channelIndex);
   const message = existingMessage || {
     id: createMessageId(),
     kind: "out",
     channel: channelIndex,
+    channelName: channel?.name || (channelIndex === 0 ? "Public" : ""),
+    channelSecret: channel?.secret || null,
     timestamp: Math.floor(Date.now() / 1000),
     text,
   };
@@ -1976,9 +1984,13 @@ function parseContactMessage(data) {
 function parseChannelMessage(data) {
   const v3 = data[0] === RESP.CHANNEL_MSG_V3;
   const offset = v3 ? 4 : 1;
+  const channelIndex = data[offset];
+  const channel = state.channels.get(channelIndex);
   const message = {
     kind: "channel",
-    channel: data[offset],
+    channel: channelIndex,
+    channelName: channel?.name || (channelIndex === 0 ? "Public" : ""),
+    channelSecret: channel?.secret || null,
     pathLen: data[offset + 1],
     textType: data[offset + 2],
     timestamp: readU32(data, offset + 3),
@@ -2037,9 +2049,13 @@ function getRecentRssi() {
 function parseChannelData(data) {
   if (data.length < 9) return;
   const len = data[8];
+  const channelIndex = data[4];
+  const channel = state.channels.get(channelIndex);
   addMessage({
     kind: "data",
-    channel: data[4],
+    channel: channelIndex,
+    channelName: channel?.name || (channelIndex === 0 ? "Public" : ""),
+    channelSecret: channel?.secret || null,
     pathLen: data[5],
     dataType: readU16(data, 6),
     text: `Data ${toHex(data.slice(9, 9 + len))}`,
@@ -2231,10 +2247,14 @@ function renderMessages() {
 
   const filtered = state.messages.filter((message) => {
     const roomPrefix = state.activeChannel.startsWith("room:") ? state.activeChannel.slice(5) : null;
+    const activeChannel = state.channels.get(Number(state.activeChannel));
+    const sameChannelIdentity = message.channelSecret && activeChannel?.secret
+      ? message.channelSecret === activeChannel.secret
+      : Number(message.channel) === Number(state.activeChannel);
     const inActiveChannel = state.activeChannel === "all"
       || (roomPrefix && message.kind === "contact" && message.prefix === roomPrefix)
       || (state.activeChannel === "dm" && (message.kind === "contact" || message.outgoing === true) && !state.roomSessions.has(message.prefix))
-      || (["channel", "data", "out"].includes(message.kind) && Number(message.channel) === Number(state.activeChannel));
+      || (["channel", "data", "out"].includes(message.kind) && sameChannelIdentity);
     if (!inActiveChannel) return false;
     const outgoing = message.kind === "out" || message.outgoing === true;
     if (state.messageDirectionFilter !== "all" && state.messageDirectionFilter !== (outgoing ? "outgoing" : "incoming")) return false;
@@ -2258,7 +2278,7 @@ function renderMessages() {
   el.messages.className = "messages";
   el.messages.innerHTML = filtered.slice(0, 30).map((message) => {
     const isDm = message.kind === "contact" || message.outgoing === true;
-    const channelName = message.channel == null ? "" : state.channels.get(message.channel)?.name;
+    const channelName = message.channel == null ? "" : message.channelName || "";
     const channelLabel = `#${message.channel ?? "?"}${channelName ? ` ${channelName}` : ""}`;
     const contactName = message.prefix
       ? [...state.contacts.values()].find((c) => c.prefix === message.prefix)?.name
