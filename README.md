@@ -17,7 +17,10 @@ USB spricht das MeshCore Companion Framing:
    ```
 
 3. `http://localhost:8000` in Chrome oder Edge oeffnen.
-4. `USB verbinden` oder `Bluetooth` anklicken und das MeshCore-Geraet auswaehlen.
+4. Fuer Bluetooth das MeshCore-Geraet zuerst in den Windows-Einstellungen unter
+   `Bluetooth & Geraete > Geraet hinzufuegen` koppeln und den am Geraet angezeigten
+   PIN eingeben. Web Bluetooth kann das Windows-Pairing nicht selbst starten.
+5. `USB verbinden` oder `Bluetooth` anklicken und das MeshCore-Geraet auswaehlen.
 
 Web Bluetooth funktioniert nur in Chrome oder Edge in einem sicheren Seitenkontext, also ueber `localhost`, `127.0.0.1` oder HTTPS. Bei einer Einbettung muss der uebergeordnete iframe Bluetooth mit `allow="bluetooth"` freigeben.
 

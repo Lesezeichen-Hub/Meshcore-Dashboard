@@ -755,9 +755,8 @@ async function connectBluetooth() {
     await openBluetoothDevice(device);
   } catch (error) {
     if (error.name !== "NotFoundError") {
-      const pairingRequired = /connection attempt failed/i.test(error.message);
-      const message = pairingRequired
-        ? "Bluetooth-Verbindung abgewiesen: MeshCore benötigt ein Windows-Bluetooth-Pairing. Gerät in Windows-Einstellungen > Bluetooth & Geräte hinzufügen und den am Gerät angezeigten PIN eingeben; danach erneut verbinden."
+      const message = /connection attempt failed/i.test(error.message)
+        ? "Bluetooth-GATT-Verbindung fehlgeschlagen: Windows-Pairing ist vorhanden, aber das MeshCore-Geraet antwortet nicht. Andere MeshCore-Apps schliessen, Geraet aus- und wieder einschalten und erneut verbinden. Falls noetig, den Windows-Bluetooth-Eintrag entfernen und neu koppeln."
         : getBluetoothOpenErrorMessage(error);
       showActionNotice(message, "error");
       log(message, "error");
@@ -1410,7 +1409,7 @@ async function sendDirectMessage(key, text, existingMessage = null) {
   const payload = new Uint8Array(13 + encodeText(text).length);
   payload[0] = CMD.SEND_TXT_MSG;
   payload[1] = TXT_TYPE_PLAIN;
-  payload[2] = 0;
+  payload[2] = contact.outPathLenRaw ?? 0xff;
   writeU32(payload, 3, Math.floor(Date.now() / 1000));
   payload.set(hexToBytes(contact.key.slice(0, 12)), 7);
   payload.set(encodeText(text), 13);
