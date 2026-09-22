@@ -954,7 +954,6 @@ async function fullSync() {
   try {
     await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
     await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
-    if (state.deviceProfileLoad) await state.deviceProfileLoad;
     try {
       await sendAndWait(buildDeviceTime(), [RESP.OK]);
     } catch (error) {
