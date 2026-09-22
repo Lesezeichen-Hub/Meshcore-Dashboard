@@ -1386,7 +1386,7 @@ async function sendDirectMessage(key, text, existingMessage = null) {
     kind: "contact",
     outgoing: true,
     prefix: contact.prefix,
-    pathLen: 0,
+    pathLen: contact.outPathLenRaw ?? 0xff,
     textType: TXT_TYPE_PLAIN,
     timestamp: Math.floor(Date.now() / 1000),
     text,
@@ -1409,7 +1409,7 @@ async function sendDirectMessage(key, text, existingMessage = null) {
   const payload = new Uint8Array(13 + encodeText(text).length);
   payload[0] = CMD.SEND_TXT_MSG;
   payload[1] = TXT_TYPE_PLAIN;
-  payload[2] = contact.outPathLenRaw ?? 0xff;
+  payload[2] = 0;
   writeU32(payload, 3, Math.floor(Date.now() / 1000));
   payload.set(hexToBytes(contact.key.slice(0, 12)), 7);
   payload.set(encodeText(text), 13);
