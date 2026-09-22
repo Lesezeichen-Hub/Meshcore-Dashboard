@@ -2273,7 +2273,7 @@ function renderMessages() {
       formatRelativeTime(message.timestamp),
       message.snr == null ? null : `SNR ${message.snr.toFixed(1)} dB`,
       message.rssi == null ? null : `RSSI ${message.rssi} dBm`,
-      message.pathLen == null ? null : formatHopCount(message.pathLen),
+      message.pathLen == null ? null : formatMessageRouteForDirection(message),
       message.textType == null ? null : `Texttyp ${message.textType}`,
       message.dataType == null ? null : `Typ 0x${message.dataType.toString(16)}`,
       message.roundTrip == null ? null : `Roundtrip ${message.roundTrip} ms`,
@@ -2490,6 +2490,11 @@ function deliveryStatusLabel(status) {
 function formatHopCount(pathLen) {
   const hops = pathLen === 0xff ? 0 : pathLen & 0x3f;
   return `${hops} ${hops === 1 ? "Hop" : "Hops"}`;
+}
+
+function formatMessageRouteForDirection(message) {
+  if (message.outgoing && message.pathLen === 0xff) return "Flood";
+  return formatHopCount(message.pathLen);
 }
 
 function messageMentionsSelf(message) {
