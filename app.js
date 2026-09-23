@@ -1004,7 +1004,22 @@ async function fullSync() {
       log(`Geraetezeit konnte nicht gesetzt werden: ${error.message}`, "warn");
     }
     await sendAndWait([CMD.GET_BATT_AND_STORAGE], [RESP.BATTERY]);
-    await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
+    await syncChannels();
+    try {
+      await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
+    } catch (error) {
+      log(`Kontaktliste konnte nicht vollständig synchronisiert werden: ${error.message}`, "warn");
+    }
+    await drainMessages();
+    reconnectFavoriteRooms().catch((error) => log(`Room-Wiederanmeldung fehlgeschlagen: ${error.message}`, "error"));
+    log("Synchronisierung abgeschlossen.");
+  } catch (error) {
+    log(`${error.message} Prüfe, ob das ausgewählte Gerät eine MeshCore Companion-Firmware nutzt.`, "error");
+  }
+}
+
+async function syncChannels() {
+  log(`Lade ${state.maxChannels} Kanaele.`);
     for (const index of state.channels.keys()) {
       if (index >= state.maxChannels) state.channels.delete(index);
     }
@@ -1018,12 +1033,6 @@ async function fullSync() {
       }
     }
     renderChannels();
-    await drainMessages();
-    reconnectFavoriteRooms().catch((error) => log(`Room-Wiederanmeldung fehlgeschlagen: ${error.message}`, "error"));
-    log("Synchronisierung abgeschlossen.");
-  } catch (error) {
-    log(`${error.message} Prüfe, ob das ausgewählte Gerät eine MeshCore Companion-Firmware nutzt.`, "error");
-  }
 }
 
 function buildAppStart() {
