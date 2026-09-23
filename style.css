@@ -566,21 +566,20 @@ dd {
 .node-archive-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   margin-top: 14px;
 }
 
-.node-archive-head h4 {
-  margin: 0;
-  font-size: 13px;
-  text-transform: uppercase;
+.node-archive-toggle {
+  min-height: 32px;
 }
 
 .node-archive {
   display: grid;
   gap: 1px;
   margin-top: 8px;
+  max-height: 320px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;

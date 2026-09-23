@@ -230,6 +230,7 @@ const el = {
   fitNetworkMapBtn: document.querySelector("#fitNetworkMapBtn"),
   mappedContactCount: document.querySelector("#mappedContactCount"),
   nodeArchiveCount: document.querySelector("#nodeArchiveCount"),
+  toggleNodeArchiveBtn: document.querySelector("#toggleNodeArchiveBtn"),
   exportNodeArchiveBtn: document.querySelector("#exportNodeArchiveBtn"),
   importNodeArchiveBtn: document.querySelector("#importNodeArchiveBtn"),
   importNodeArchiveInput: document.querySelector("#importNodeArchiveInput"),
@@ -426,6 +427,12 @@ el.importConfigBtn.addEventListener("click", () => el.importConfigInput.click())
 el.importConfigInput.addEventListener("change", importConfiguration);
 el.installAppBtn.addEventListener("click", installDashboard);
 el.fitNetworkMapBtn.addEventListener("click", fitNetworkMap);
+el.toggleNodeArchiveBtn.addEventListener("click", () => {
+  const expanded = el.nodeArchive.hidden;
+  el.nodeArchive.hidden = !expanded;
+  el.toggleNodeArchiveBtn.setAttribute("aria-expanded", String(expanded));
+  el.toggleNodeArchiveBtn.textContent = expanded ? "Node-Archiv ausblenden" : "Node-Archiv anzeigen";
+});
 el.exportNodeArchiveBtn.addEventListener("click", exportNodeArchive);
 el.importNodeArchiveBtn.addEventListener("click", () => el.importNodeArchiveInput.click());
 el.importNodeArchiveInput.addEventListener("change", importNodeArchive);
