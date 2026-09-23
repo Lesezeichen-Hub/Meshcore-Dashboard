@@ -3613,14 +3613,14 @@ function loadFavoriteContacts() {
 function loadContactArchive() {
   try {
     const values = JSON.parse(localStorage.getItem(CONTACT_ARCHIVE_STORAGE_KEY) || "[]");
-    return Array.isArray(values) ? values.filter((contact) => contact?.key) : [];
+    return Array.isArray(values) ? values.filter((contact) => contact?.key && hasValidPosition(contact)) : [];
   } catch {
     return [];
   }
 }
 
 function saveContactArchive() {
-  const contacts = [...state.contacts.values()];
+  const contacts = [...state.contacts.values()].filter(hasValidPosition);
   state.contactArchive = contacts;
   try {
     localStorage.setItem(CONTACT_ARCHIVE_STORAGE_KEY, JSON.stringify(contacts));
@@ -3639,7 +3639,7 @@ function restoreContactArchive() {
 }
 
 function renderNodeArchive() {
-  const contacts = [...state.contacts.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), "de"));
+  const contacts = state.contactArchive.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "de"));
   el.nodeArchiveCount.textContent = `${contacts.length} Nodes gesichert`;
   if (!contacts.length) {
     el.nodeArchive.className = "node-archive empty";
@@ -3648,7 +3648,7 @@ function renderNodeArchive() {
   }
   el.nodeArchive.className = "node-archive";
   el.nodeArchive.innerHTML = contacts.map((contact) => {
-    const position = hasValidPosition(contact) ? `${(contact.lat / 1e6).toFixed(5)}, ${(contact.lon / 1e6).toFixed(5)}` : "ohne Position";
+    const position = `${(contact.lat / 1e6).toFixed(5)}, ${(contact.lon / 1e6).toFixed(5)}`;
     return `<div class="node-archive-row"><strong>${escapeHtml(contact.name)}</strong><span>${escapeHtml(TYPE_NAMES[contact.type] || `Typ ${contact.type}`)}</span><span>${escapeHtml(position)}</span><span class="mono">${escapeHtml(contact.key.slice(0, 12))}</span></div>`;
   }).join("");
 }
@@ -3678,11 +3678,12 @@ async function importNodeArchive(event) {
   try {
     const parsed = JSON.parse(await file.text());
     if (parsed?.format !== "meshcore-dashboard-node-archive" || !Array.isArray(parsed.nodes)) throw new Error("Unbekanntes Node-Archiv");
-    state.contacts = new Map([...state.contacts, ...parsed.nodes.filter((contact) => contact?.key).map((contact) => [contact.key, contact])]);
+    const importedNodes = parsed.nodes.filter((contact) => contact?.key && hasValidPosition(contact));
+    state.contacts = new Map([...state.contacts, ...importedNodes.map((contact) => [contact.key, contact])]);
     saveContactArchive();
     renderContacts();
     renderNetworkOverview();
-    showActionNotice(`${parsed.nodes.length} Nodes importiert.`);
+    showActionNotice(`${importedNodes.length} Nodes mit GPS importiert.`);
   } catch (error) {
     showActionNotice(`Node-Import fehlgeschlagen: ${error.message}`, "error");
   }
