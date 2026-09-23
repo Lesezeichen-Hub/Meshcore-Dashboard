@@ -669,11 +669,38 @@ dd {
   fill: var(--panel-2);
   stroke: var(--accent);
   stroke-width: 3;
+  cursor: grab;
 }
 
+.graph-node:active circle { cursor: grabbing; }
+.graph-node.selected circle { stroke: var(--text); stroke-width: 5; }
 .graph-node.repeater circle { stroke: var(--accent-2); }
 .graph-node.origin circle { stroke: var(--danger); }
 .graph-node text { fill: var(--text); font-size: 11px; text-anchor: middle; }
+
+.graph-details {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.graph-details.empty {
+  display: block;
+  color: var(--muted);
+}
+
+.graph-details strong { color: var(--text); }
+.graph-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 16px;
+}
+.graph-detail-item { display: grid; gap: 2px; }
+.graph-detail-item span { color: var(--muted); font-size: 11px; }
 
 .route-chain {
   grid-column: 1 / -1;

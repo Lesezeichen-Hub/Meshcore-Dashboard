@@ -129,6 +129,10 @@ const state = {
   networkHeatLayer: null,
   networkMapBounds: null,
   networkMapSignature: "",
+  graphPositions: new Map(),
+  graphSelectedKey: null,
+  graphDrag: null,
+  graphSuppressClick: false,
   roomSessions: new Map(),
   roomFavorites: loadRoomFavorites(),
   roomCredentials: loadRoomCredentials(),
@@ -251,6 +255,7 @@ const el = {
   mapRepeatersToggle: document.querySelector("#mapRepeatersToggle"),
   mapOtherToggle: document.querySelector("#mapOtherToggle"),
   networkGraph: document.querySelector("#networkGraph"),
+  graphDetails: document.querySelector("#graphDetails"),
   fullscreenMapBtn: document.querySelector("#fullscreenMapBtn"),
   resetPacketStatsBtn: document.querySelector("#resetPacketStatsBtn"),
   roomLoginDialog: document.querySelector("#roomLoginDialog"),
@@ -448,6 +453,11 @@ el.mapClientsToggle.addEventListener("change", () => updateMapOption("clients", 
 el.mapRepeatersToggle.addEventListener("change", () => updateMapOption("repeaters", el.mapRepeatersToggle.checked));
 el.mapOtherToggle.addEventListener("change", () => updateMapOption("other", el.mapOtherToggle.checked));
 el.fullscreenMapBtn.addEventListener("click", toggleNetworkFullscreen);
+el.networkGraph.addEventListener("pointerdown", handleGraphPointerDown);
+el.networkGraph.addEventListener("pointermove", handleGraphPointerMove);
+el.networkGraph.addEventListener("pointerup", handleGraphPointerUp);
+el.networkGraph.addEventListener("pointercancel", handleGraphPointerUp);
+el.networkGraph.addEventListener("click", handleGraphClick);
 el.resetPacketStatsBtn.addEventListener("click", () => {
   state.packetStats = createPacketStats();
   renderPacketDiagnostics();
@@ -3919,6 +3929,7 @@ function renderNetworkGraph() {
   const contacts = [...state.contacts.values()];
   if (!contacts.length) {
     el.networkGraph.innerHTML = '<span class="empty">Noch keine Kontakte.</span>';
+    el.graphDetails.hidden = true;
     return;
   }
   const ringCount = Math.max(1, Math.ceil(contacts.length / 24));
@@ -3933,12 +3944,16 @@ function renderNetworkGraph() {
     const indexInRing = index % 24;
     const ringCount = Math.min(24, contacts.length - ring * 24);
     const radius = 125 + ring * 72;
+    const savedPosition = state.graphPositions.get(contact.key);
     return {
       contact,
-      x: center.x + Math.cos((indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2) * radius,
-      y: center.y + Math.sin((indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2) * radius,
+      x: savedPosition?.x ?? center.x + Math.cos((indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2) * radius,
+      y: savedPosition?.y ?? center.y + Math.sin((indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2) * radius,
     };
   });
+  for (const point of points) {
+    if (!state.graphPositions.has(point.contact.key)) state.graphPositions.set(point.contact.key, { x: point.x, y: point.y });
+  }
   const pointByKey = new Map(points.map((point) => [point.contact.key, point]));
   const edgeKeys = new Set();
   const edgeParts = [];
@@ -3953,12 +3968,92 @@ function renderNetworkGraph() {
       if (edgeKeys.has(edgeKey)) continue;
       edgeKeys.add(edgeKey);
       const frequent = to.hash && (usage.get(to.hash) || 0) === maxUsage && maxUsage > 1;
-      edgeParts.push(`<line class="graph-edge${frequent ? " frequent" : ""}" x1="${from.point.x.toFixed(1)}" y1="${from.point.y.toFixed(1)}" x2="${to.point.x.toFixed(1)}" y2="${to.point.y.toFixed(1)}"><title>${escapeHtml(target.contact.name)}: ${hashes.map(formatRepeaterHash).join(" -> ") || "direkt"}</title></line>`);
+      edgeParts.push(`<line class="graph-edge${frequent ? " frequent" : ""}" data-from="${from.point.contact?.key || "origin"}" data-to="${to.point.contact?.key || target.contact.key}" x1="${from.point.x.toFixed(1)}" y1="${from.point.y.toFixed(1)}" x2="${to.point.x.toFixed(1)}" y2="${to.point.y.toFixed(1)}"><title>${escapeHtml(target.contact.name)}: ${hashes.map(formatRepeaterHash).join(" -> ") || "direkt"}</title></line>`);
     }
   }
   const edges = edgeParts.join("");
-  const nodes = points.map((point) => `<g class="graph-node${point.contact.type === 2 ? " repeater" : ""}" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="12"><title>${escapeHtml(point.contact.name)}</title></circle><text y="27">${escapeHtml(point.contact.name.slice(0, 18))}</text></g>`).join("");
+  const nodes = points.map((point) => `<g class="graph-node${point.contact.type === 2 ? " repeater" : ""}${state.graphSelectedKey === point.contact.key ? " selected" : ""}" data-key="${escapeHtml(point.contact.key)}" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="12"><title>${escapeHtml(point.contact.name)}</title></circle><text y="27">${escapeHtml(point.contact.name.slice(0, 18))}</text></g>`).join("");
   el.networkGraph.innerHTML = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Netzwerkgraph"><g class="graph-node origin" transform="translate(${center.x} ${center.y})"><circle r="18"></circle><text y="34">Eigener Node</text></g>${edges}${nodes}</svg>`;
+}
+
+function handleGraphPointerDown(event) {
+  const node = event.target.closest(".graph-node[data-key]");
+  if (!node) return;
+  const position = state.graphPositions.get(node.dataset.key);
+  const svg = el.networkGraph.querySelector("svg");
+  if (!position || !svg) return;
+  state.graphDrag = {
+    key: node.dataset.key,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: position.x,
+    originY: position.y,
+    x: position.x,
+    y: position.y,
+    svg,
+    moved: false,
+  };
+  el.networkGraph.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function handleGraphPointerMove(event) {
+  const drag = state.graphDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const viewBox = drag.svg.viewBox.baseVal;
+  const rect = drag.svg.getBoundingClientRect();
+  const scaleX = viewBox.width / rect.width;
+  const scaleY = viewBox.height / rect.height;
+  drag.x = Math.max(24, Math.min(viewBox.width - 24, drag.originX + (event.clientX - drag.startX) * scaleX));
+  drag.y = Math.max(24, Math.min(viewBox.height - 24, drag.originY + (event.clientY - drag.startY) * scaleY));
+  drag.moved = drag.moved || Math.abs(drag.x - drag.originX) > 2 || Math.abs(drag.y - drag.originY) > 2;
+  const positions = new Map(state.graphPositions);
+  positions.set(drag.key, { x: drag.x, y: drag.y });
+  const node = [...el.networkGraph.querySelectorAll(".graph-node[data-key]")].find((item) => item.dataset.key === drag.key);
+  if (node) node.setAttribute("transform", `translate(${drag.x.toFixed(1)} ${drag.y.toFixed(1)})`);
+  updateGraphEdges(positions, viewBox.width / 2, viewBox.height / 2);
+}
+
+function handleGraphPointerUp(event) {
+  const drag = state.graphDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (drag.moved) {
+    state.graphPositions.set(drag.key, { x: drag.x, y: drag.y });
+    state.graphSuppressClick = true;
+    setTimeout(() => { state.graphSuppressClick = false; }, 0);
+  }
+  state.graphDrag = null;
+  if (el.networkGraph.hasPointerCapture(event.pointerId)) el.networkGraph.releasePointerCapture(event.pointerId);
+}
+
+function updateGraphEdges(positions, originX, originY) {
+  for (const edge of el.networkGraph.querySelectorAll(".graph-edge")) {
+    const from = edge.dataset.from === "origin" ? { x: originX, y: originY } : positions.get(edge.dataset.from);
+    const to = edge.dataset.to === "origin" ? { x: originX, y: originY } : positions.get(edge.dataset.to);
+    if (!from || !to) continue;
+    edge.setAttribute("x1", from.x.toFixed(1));
+    edge.setAttribute("y1", from.y.toFixed(1));
+    edge.setAttribute("x2", to.x.toFixed(1));
+    edge.setAttribute("y2", to.y.toFixed(1));
+  }
+}
+
+function handleGraphClick(event) {
+  if (state.graphSuppressClick) return;
+  const node = event.target.closest(".graph-node[data-key]");
+  if (!node) return;
+  state.graphSelectedKey = node.dataset.key;
+  showGraphDetails(state.contacts.get(state.graphSelectedKey));
+  el.networkGraph.querySelectorAll(".graph-node[data-key]").forEach((item) => item.classList.toggle("selected", item === node));
+}
+
+function showGraphDetails(contact) {
+  if (!contact) return;
+  el.graphDetails.hidden = false;
+  el.graphDetails.className = "graph-details";
+  const path = formatPathHashes(contact.outPathLenRaw, contact.outPathRaw);
+  el.graphDetails.innerHTML = `<strong>${escapeHtml(contact.name)}</strong><div class="graph-details-grid"><div class="graph-detail-item"><span>Typ</span><strong>${escapeHtml(TYPE_NAMES[contact.type] || `Typ ${contact.type}`)}</strong></div><div class="graph-detail-item"><span>Public Key</span><strong class="mono">${escapeHtml(contact.key)}</strong></div><div class="graph-detail-item"><span>Route</span><strong>${escapeHtml(formatContactRoute(contact.outPathLen))}</strong></div><div class="graph-detail-item"><span>Signal</span><strong>${contact.lastSnr == null ? "-" : `${contact.lastSnr.toFixed(1)} dB SNR`}</strong></div><div class="graph-detail-item"><span>Letztes Advert</span><strong>${escapeHtml(formatExactTime(contact.lastAdvert))}</strong></div><div class="graph-detail-item"><span>Bekannte Pfad-Hops</span><strong>${escapeHtml(path.hashes.join(" -> ") || "Direkt")}</strong></div></div>`;
 }
 
 function fitNetworkMap() {
