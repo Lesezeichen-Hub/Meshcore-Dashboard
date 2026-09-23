@@ -52,11 +52,11 @@ const RESP = {
 };
 
 const TYPE_NAMES = {
-  0: "\u{1F608} Unbekannt",
-  1: "\u{1F436} Client",
-  2: "\u{26CF}\uFE0F Repeater",
-  3: "\u{1F4BB} Room Server",
-  4: "\u{1F528} Sensor",
+  0: "Unbekannt",
+  1: "Client",
+  2: "Repeater",
+  3: "Room Server",
+  4: "Sensor",
 };
 
 const TXT_TYPE_PLAIN = 0;
@@ -295,13 +295,13 @@ setInterval(() => {
 }, 60000);
 
 if (!("serial" in navigator) && !("bluetooth" in navigator)) {
-  el.supportHint.textContent = "\u{1F528} USB/Bluetooth ben\u00f6tigen Chrome oder Edge auf localhost beziehungsweise HTTPS. \u{1F4BB}";
+  el.supportHint.textContent = "USB/Bluetooth benötigen Chrome oder Edge auf localhost beziehungsweise HTTPS.";
   el.connectBtn.disabled = true;
 } else if (!("serial" in navigator)) {
-  el.supportHint.textContent = "\u{1F608} USB wird nicht unterst\u00fctzt; Bluetooth ist verf\u00fcgbar. \u{1F4F6}";
+  el.supportHint.textContent = "USB wird nicht unterstützt; Bluetooth ist verfügbar.";
   el.connectBtn.disabled = true;
 } else if (!("bluetooth" in navigator)) {
-  el.supportHint.textContent = "\u{1F436} Bluetooth ist in diesem Seitenkontext nicht verf\u00fcgbar; USB ist verf\u00fcgbar. \u{1F50C}";
+  el.supportHint.textContent = "Bluetooth ist in diesem Seitenkontext nicht verfügbar; USB ist verfügbar.";
 }
 
 updateConnectionUi();
@@ -2393,7 +2393,7 @@ function renderContacts() {
             <td>${renderTime(contact.lastAdvert)}</td>
             <td class="mono">${escapeHtml(contact.key)}</td>
             <td>
-              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">&#128251; Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">&#128054; DM</button>` : contact.type === 3 ? `<button type="button" class="secondary favorite-button" data-room-favorite="${escapeHtml(contact.key)}" aria-pressed="${state.roomFavorites.has(contact.key)}" title="Room-Favorit">${state.roomFavorites.has(contact.key) ? "&#9733;" : "&#9734;"}</button> ${state.roomSessions.has(contact.prefix) ? `<button type="button" class="secondary" data-room-open="${escapeHtml(contact.key)}">&#128187; Oeffnen</button> <button type="button" class="secondary" data-room-logout="${escapeHtml(contact.key)}">&#128520; Verlassen</button>` : `<button type="button" class="secondary" data-room-login="${escapeHtml(contact.key)}"${state.connected ? "" : " disabled"}>&#9935;&#65039; Beitreten</button>`}` : "-"}
+              ${contact.type === 1 ? `<button type="button" class="secondary" data-ping="${escapeHtml(contact.key)}">Ping</button> <button type="button" class="secondary" data-dm="${escapeHtml(contact.key)}">DM</button>` : contact.type === 3 ? `<button type="button" class="secondary favorite-button" data-room-favorite="${escapeHtml(contact.key)}" aria-pressed="${state.roomFavorites.has(contact.key)}" title="Room-Favorit">${state.roomFavorites.has(contact.key) ? "&#9733;" : "&#9734;"}</button> ${state.roomSessions.has(contact.prefix) ? `<button type="button" class="secondary" data-room-open="${escapeHtml(contact.key)}">Oeffnen</button> <button type="button" class="secondary" data-room-logout="${escapeHtml(contact.key)}">Verlassen</button>` : `<button type="button" class="secondary" data-room-login="${escapeHtml(contact.key)}"${state.connected ? "" : " disabled"}>Beitreten</button>`}` : "-"}
             </td>
           </tr>
         `).join("")}
@@ -2407,9 +2407,9 @@ function renderChannelTabs() {
   const rank = new Map(order.map((index, position) => [index, position]));
   visible.sort((a, b) => (rank.get(a.index) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.index) ?? Number.MAX_SAFE_INTEGER) || a.index - b.index);
   const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
-  const dmLabel = dmContact?.type === 3 && state.roomSessions.has(dmContact.prefix) ? `\u{1F4BB} Room: ${dmContact.name}` : "\u{1F436} DM";
-  const roomTabs = [...state.roomSessions.entries()].map(([prefix, session]) => ({ key: `room:${prefix}`, label: `\u{1F4BB} Room: ${session.name}${session.admin ? " \u00b7 \u{1F608} Admin" : ""}` }));
-  const tabs = [{ key: "all", label: "\u{26CF}\uFE0F Alle" }, { key: "dm", label: dmLabel }, ...roomTabs, ...visible.map((channel) => ({ key: String(channel.index), label: `\u{1F528} ${channel.name || `Kanal ${channel.index}`}` }))];
+  const dmLabel = dmContact?.type === 3 && state.roomSessions.has(dmContact.prefix) ? `Room: ${dmContact.name}` : "DM";
+  const roomTabs = [...state.roomSessions.entries()].map(([prefix, session]) => ({ key: `room:${prefix}`, label: `Room: ${session.name}${session.admin ? " · Admin" : ""}` }));
+  const tabs = [{ key: "all", label: "Alle" }, { key: "dm", label: dmLabel }, ...roomTabs, ...visible.map((channel) => ({ key: String(channel.index), label: channel.name || `Kanal ${channel.index}` }))];
   const totalUnread = [...state.unreadChannels.values()].reduce((total, count) => total + Number(count || 0), 0);
   el.channelTabs.innerHTML = tabs.map((tab) => {
     const unreadCount = tab.key === "all" ? totalUnread : Number(state.unreadChannels.get(tab.key) || 0);
@@ -2475,11 +2475,11 @@ function renderChannels() {
   const selected = state.activeChannel === "dm" || state.activeChannel.startsWith("room:") ? state.activeChannel : el.channelSelect.value || state.activeChannel;
   const dmContact = state.dmTarget ? state.contacts.get(state.dmTarget) : null;
   const dmOption = dmContact && (dmContact.type === 1 || dmContact.type === 3)
-    ? `<option value="dm">${dmContact.type === 3 ? "\u{1F4BB} Room" : "\u{1F436} DM"}: ${escapeHtml(dmContact.name)}</option>`
+    ? `<option value="dm">${dmContact.type === 3 ? "Room" : "DM"}: ${escapeHtml(dmContact.name)}</option>`
     : "";
-  const roomOptions = [...state.roomSessions.entries()].map(([prefix, session]) => `<option value="room:${escapeHtml(prefix)}">\u{1F4BB} Room: ${escapeHtml(session.name)}</option>`).join("");
+  const roomOptions = [...state.roomSessions.entries()].map(([prefix, session]) => `<option value="room:${escapeHtml(prefix)}">Room: ${escapeHtml(session.name)}</option>`).join("");
   el.channelSelect.innerHTML = dmOption + roomOptions + visible.map((channel) => (
-    `<option value="${channel.index}">\u{1F528} #${channel.index} ${escapeHtml(channel.name || "Kanal")}</option>`
+    `<option value="${channel.index}">#${channel.index} ${escapeHtml(channel.name || "Kanal")}</option>`
   )).join("");
   if (selected.startsWith("room:") && state.roomSessions.has(selected.slice(5))) {
     el.channelSelect.value = selected;
@@ -3464,10 +3464,9 @@ function updateConnectionUi() {
   const transportLabel = state.transport === "bluetooth" ? "Bluetooth" : state.transport === "usb" ? "USB" : null;
   const idleSeconds = state.connected && state.lastPacketAt ? Math.floor((Date.now() - state.lastPacketAt) / 1000) : 0;
   const queueLabel = state.sendQueue.length ? `, ${state.sendQueue.length} wartend` : "";
-  const connectedLabel = idleSeconds > 90 ? "\u{1F608} Keine Daten" : "\u{1F528} Verbunden";
   el.connectionState.textContent = state.connected
-    ? `${connectedLabel} (${transportLabel}${queueLabel})`
-    : `\u{1F436} Nicht verbunden${queueLabel}`;
+    ? `${idleSeconds > 90 ? "Keine Daten" : "Verbunden"} (${transportLabel}${queueLabel})`
+    : `Nicht verbunden${queueLabel}`;
   el.connectBtn.disabled = state.connected || !("serial" in navigator);
   el.bleConnectBtn.disabled = state.connected || !("bluetooth" in navigator);
   el.syncBtn.disabled = !state.connected;
@@ -3490,9 +3489,8 @@ let actionNoticeTimer = null;
 
 function showActionNotice(message, variant = "info") {
   if (!el.actionNotice) return;
-  const noticeIcon = variant === "error" ? "\u{1F608}" : variant === "success" ? "\u{1F528}" : "\u{1F4BB}";
   el.actionNotice.hidden = false;
-  el.actionNotice.textContent = `${noticeIcon} ${message}`;
+  el.actionNotice.textContent = message;
   el.actionNotice.dataset.variant = variant;
   el.actionNotice.classList.remove("visible");
   void el.actionNotice.offsetWidth;
@@ -3505,7 +3503,7 @@ function showActionNotice(message, variant = "info") {
 }
 
 function log(message, level = "info") {
-  const prefix = level === "error" ? "\u{1F608}" : level === "warn" ? "\u{26CF}\uFE0F" : "\u{1F4BB}";
+  const prefix = level === "error" ? "!" : ">";
   el.log.textContent = `${new Date().toLocaleTimeString()} ${prefix} ${message}\n${el.log.textContent}`.slice(0, 12000);
 }
 
