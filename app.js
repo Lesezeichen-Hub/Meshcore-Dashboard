@@ -232,6 +232,8 @@ const el = {
   nodeArchiveCount: document.querySelector("#nodeArchiveCount"),
   toggleNodeArchiveBtn: document.querySelector("#toggleNodeArchiveBtn"),
   exportNodeArchiveBtn: document.querySelector("#exportNodeArchiveBtn"),
+  exportNodeGeoJsonBtn: document.querySelector("#exportNodeGeoJsonBtn"),
+  exportNodeCsvBtn: document.querySelector("#exportNodeCsvBtn"),
   importNodeArchiveBtn: document.querySelector("#importNodeArchiveBtn"),
   importNodeArchiveInput: document.querySelector("#importNodeArchiveInput"),
   nodeArchive: document.querySelector("#nodeArchive"),
@@ -434,6 +436,8 @@ el.toggleNodeArchiveBtn.addEventListener("click", () => {
   el.toggleNodeArchiveBtn.textContent = expanded ? "Node-Archiv ausblenden" : "Node-Archiv anzeigen";
 });
 el.exportNodeArchiveBtn.addEventListener("click", exportNodeArchive);
+el.exportNodeGeoJsonBtn.addEventListener("click", exportNodeGeoJson);
+el.exportNodeCsvBtn.addEventListener("click", exportNodeCsv);
 el.importNodeArchiveBtn.addEventListener("click", () => el.importNodeArchiveInput.click());
 el.importNodeArchiveInput.addEventListener("change", importNodeArchive);
 document.querySelectorAll("[data-network-view]").forEach((button) => button.addEventListener("click", () => setNetworkView(button.dataset.networkView)));
@@ -3680,6 +3684,55 @@ function exportNodeArchive() {
   showActionNotice(`${state.contactArchive.length} Nodes exportiert.`);
 }
 
+function exportNodeGeoJson() {
+  saveContactArchive();
+  const geoJson = {
+    type: "FeatureCollection",
+    features: state.contactArchive.map((contact) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [contact.lon / 1e6, contact.lat / 1e6] },
+      properties: {
+        key: contact.key,
+        name: contact.name,
+        type: TYPE_NAMES[contact.type] || `Typ ${contact.type}`,
+        nodeType: contact.type,
+        hops: contact.outPathLenRaw == null ? null : contact.outPathLenRaw & 0x3f,
+        lastAdvert: contact.lastAdvert || null,
+      },
+    })),
+  };
+  downloadTextFile(`meshcore-dashboard-nodes-${new Date().toISOString().slice(0, 10)}.geojson`, JSON.stringify(geoJson, null, 2), "application/geo+json");
+  showActionNotice(`${state.contactArchive.length} Nodes als GeoJSON exportiert.`);
+}
+
+function exportNodeCsv() {
+  saveContactArchive();
+  const columns = ["key", "name", "type", "nodeType", "latitude", "longitude", "hops", "lastAdvert"];
+  const escapeCsv = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const rows = state.contactArchive.map((contact) => [
+    contact.key,
+    contact.name,
+    TYPE_NAMES[contact.type] || `Typ ${contact.type}`,
+    contact.type,
+    (contact.lat / 1e6).toFixed(6),
+    (contact.lon / 1e6).toFixed(6),
+    contact.outPathLenRaw == null ? "" : contact.outPathLenRaw & 0x3f,
+    contact.lastAdvert || "",
+  ]);
+  const csv = [columns, ...rows].map((row) => row.map(escapeCsv).join(",")).join("\r\n");
+  downloadTextFile(`meshcore-dashboard-nodes-${new Date().toISOString().slice(0, 10)}.csv`, `\uFEFF${csv}`, "text/csv;charset=utf-8");
+  showActionNotice(`${state.contactArchive.length} Nodes als CSV exportiert.`);
+}
+
+function downloadTextFile(filename, content, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 async function importNodeArchive(event) {
   const file = event.target.files?.[0];
   event.target.value = "";
@@ -3905,7 +3958,7 @@ function renderNetworkGraph() {
   }
   const edges = edgeParts.join("");
   const nodes = points.map((point) => `<g class="graph-node${point.contact.type === 2 ? " repeater" : ""}" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="12"><title>${escapeHtml(point.contact.name)}</title></circle><text y="27">${escapeHtml(point.contact.name.slice(0, 18))}</text></g>`).join("");
-  el.networkGraph.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Netzwerkgraph"><g class="graph-node origin" transform="translate(${center.x} ${center.y})"><circle r="18"></circle><text y="34">Eigener Node</text></g>${edges}${nodes}</svg>`;
+  el.networkGraph.innerHTML = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Netzwerkgraph"><g class="graph-node origin" transform="translate(${center.x} ${center.y})"><circle r="18"></circle><text y="34">Eigener Node</text></g>${edges}${nodes}</svg>`;
 }
 
 function fitNetworkMap() {

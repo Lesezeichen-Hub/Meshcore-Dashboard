@@ -639,6 +639,8 @@ dd {
 .network-graph {
   position: relative;
   min-height: 460px;
+  max-height: 80vh;
+  resize: both;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -647,9 +649,10 @@ dd {
 
 .network-graph svg {
   display: block;
-  width: 100%;
-  min-width: 760px;
-  height: 520px;
+  width: max(100%, 900px);
+  min-width: 900px;
+  height: auto;
+  min-height: 520px;
 }
 
 .graph-edge {
