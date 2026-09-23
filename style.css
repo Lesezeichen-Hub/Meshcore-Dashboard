@@ -1392,9 +1392,12 @@ html[data-chat-density="compact"] .message-head button {
   bottom: calc(100% + 8px);
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(4, 38px);
+  grid-template-columns: repeat(6, 38px);
   gap: 4px;
   padding: 8px;
+  max-width: min(92vw, 268px);
+  max-height: min(60vh, 360px);
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-2);
