@@ -563,6 +563,53 @@ dd {
   place-items: center;
 }
 
+.node-archive-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.node-archive-head h4 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.node-archive {
+  display: grid;
+  gap: 1px;
+  margin-top: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.node-archive.empty {
+  display: grid;
+  min-height: 48px;
+  place-items: center;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.node-archive-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.3fr) minmax(90px, 0.7fr) minmax(150px, 1fr) minmax(80px, 0.7fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 560px;
+  padding: 9px 10px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.node-archive-row span {
+  color: var(--muted);
+}
+
 .leaflet-container {
   color: #17201d;
   font-family: inherit;

@@ -209,6 +209,9 @@
                   </div>
                   <button id="fitNetworkMapBtn" type="button" class="secondary" disabled>Alle zeigen</button>
                   <button id="fullscreenMapBtn" type="button" class="secondary">Vollbild</button>
+                  <button id="exportNodeArchiveBtn" type="button" class="secondary">Node-Backup</button>
+                  <button id="importNodeArchiveBtn" type="button" class="secondary">Node-Restore</button>
+                  <input id="importNodeArchiveInput" type="file" accept="application/json,.json" hidden>
                 </div>
               </div>
               <div class="map-layer-controls" aria-label="Kartenebenen">
@@ -226,6 +229,8 @@
               </div>
               <div id="networkMap" class="network-map empty">Noch keine Kontakte mit Position.</div>
               <div id="networkGraph" class="network-graph" hidden></div>
+              <div class="node-archive-head"><h4>Node-Archiv</h4><span id="nodeArchiveCount" class="chip">0 Nodes gesichert</span></div>
+              <div id="nodeArchive" class="node-archive empty">Noch keine Nodes im Archiv.</div>
             </section>
             <section class="network-section">
               <h3>Routen</h3>

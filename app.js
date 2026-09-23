@@ -76,6 +76,7 @@ const AUTO_PONG_COOLDOWN_MS = 15000;
 const RECONNECT_MAX_ATTEMPTS = 8;
 const BLE_OPEN_ATTEMPTS = 4;
 const STORAGE_SCHEMA_VERSION = 2;
+const CONTACT_ARCHIVE_STORAGE_KEY = "meshcore-dashboard-node-archive";
 const DEVICE_PROFILE_DB_NAME = "meshcore-dashboard-profiles";
 const DEVICE_PROFILE_DB_VERSION = 2;
 
@@ -94,6 +95,7 @@ const state = {
   maxChannels: 8,
   frameBuffer: [],
   contacts: new Map(),
+  contactArchive: loadContactArchive(),
   contactOrder: new Map(),
   contactSequence: 0,
   channels: new Map(),
@@ -227,6 +229,11 @@ const el = {
   networkMap: document.querySelector("#networkMap"),
   fitNetworkMapBtn: document.querySelector("#fitNetworkMapBtn"),
   mappedContactCount: document.querySelector("#mappedContactCount"),
+  nodeArchiveCount: document.querySelector("#nodeArchiveCount"),
+  exportNodeArchiveBtn: document.querySelector("#exportNodeArchiveBtn"),
+  importNodeArchiveBtn: document.querySelector("#importNodeArchiveBtn"),
+  importNodeArchiveInput: document.querySelector("#importNodeArchiveInput"),
+  nodeArchive: document.querySelector("#nodeArchive"),
   routeOverview: document.querySelector("#routeOverview"),
   rangeStats: document.querySelector("#rangeStats"),
   packetDiagnostics: document.querySelector("#packetDiagnostics"),
@@ -269,6 +276,7 @@ el.weatherToggle.checked = state.weatherEnabled;
 el.autoReconnectToggle.checked = state.autoReconnect;
 applyChatDensity(loadChatDensity());
 initializeCollapsiblePanels();
+restoreContactArchive();
 renderNetworkOverview();
 resolvePostalLocation();
 registerServiceWorker();
@@ -418,6 +426,9 @@ el.importConfigBtn.addEventListener("click", () => el.importConfigInput.click())
 el.importConfigInput.addEventListener("change", importConfiguration);
 el.installAppBtn.addEventListener("click", installDashboard);
 el.fitNetworkMapBtn.addEventListener("click", fitNetworkMap);
+el.exportNodeArchiveBtn.addEventListener("click", exportNodeArchive);
+el.importNodeArchiveBtn.addEventListener("click", () => el.importNodeArchiveInput.click());
+el.importNodeArchiveInput.addEventListener("change", importNodeArchive);
 document.querySelectorAll("[data-network-view]").forEach((button) => button.addEventListener("click", () => setNetworkView(button.dataset.networkView)));
 el.mapColorMode.addEventListener("change", () => updateMapOption("colorMode", el.mapColorMode.value));
 el.mapLinesToggle.addEventListener("change", () => updateMapOption("lines", el.mapLinesToggle.checked));
@@ -1987,7 +1998,9 @@ function parseContact(data) {
   };
   state.contacts.set(key, contact);
   state.contactOrder.set(key, ++state.contactSequence);
+  saveContactArchive();
   renderContacts();
+  renderNodeArchive();
   renderNetworkOverview();
 }
 
@@ -2018,6 +2031,7 @@ function parseContactMessage(data) {
   if (contact && snr != null) {
     contact.lastSnr = snr;
     contact.lastSeen = timestamp;
+    saveContactArchive();
     renderContacts();
   }
   addMessage({ kind: "contact", prefix, pathLen, textType, timestamp, text: decodeUtf8(data.slice(textOffset)), snr, rssi: getRecentRssi() });
@@ -3586,6 +3600,84 @@ function loadFavoriteContacts() {
     return new Set(Array.isArray(values) ? values : []);
   } catch {
     return new Set();
+  }
+}
+
+function loadContactArchive() {
+  try {
+    const values = JSON.parse(localStorage.getItem(CONTACT_ARCHIVE_STORAGE_KEY) || "[]");
+    return Array.isArray(values) ? values.filter((contact) => contact?.key) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveContactArchive() {
+  const contacts = [...state.contacts.values()];
+  state.contactArchive = contacts;
+  try {
+    localStorage.setItem(CONTACT_ARCHIVE_STORAGE_KEY, JSON.stringify(contacts));
+  } catch (error) {
+    log(`Node-Archiv konnte nicht gespeichert werden: ${error.message}`, "warn");
+  }
+}
+
+function restoreContactArchive() {
+  for (const contact of state.contactArchive) {
+    state.contacts.set(contact.key, contact);
+    state.contactOrder.set(contact.key, ++state.contactSequence);
+  }
+  renderContacts();
+  renderNodeArchive();
+}
+
+function renderNodeArchive() {
+  const contacts = [...state.contacts.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), "de"));
+  el.nodeArchiveCount.textContent = `${contacts.length} Nodes gesichert`;
+  if (!contacts.length) {
+    el.nodeArchive.className = "node-archive empty";
+    el.nodeArchive.textContent = "Noch keine Nodes im Archiv.";
+    return;
+  }
+  el.nodeArchive.className = "node-archive";
+  el.nodeArchive.innerHTML = contacts.map((contact) => {
+    const position = hasValidPosition(contact) ? `${(contact.lat / 1e6).toFixed(5)}, ${(contact.lon / 1e6).toFixed(5)}` : "ohne Position";
+    return `<div class="node-archive-row"><strong>${escapeHtml(contact.name)}</strong><span>${escapeHtml(TYPE_NAMES[contact.type] || `Typ ${contact.type}`)}</span><span>${escapeHtml(position)}</span><span class="mono">${escapeHtml(contact.key.slice(0, 12))}</span></div>`;
+  }).join("");
+}
+
+function exportNodeArchive() {
+  saveContactArchive();
+  const backup = {
+    format: "meshcore-dashboard-node-archive",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    nodes: state.contactArchive,
+  };
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `meshcore-dashboard-node-archiv-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  showActionNotice(`${state.contactArchive.length} Nodes exportiert.`);
+}
+
+async function importNodeArchive(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (parsed?.format !== "meshcore-dashboard-node-archive" || !Array.isArray(parsed.nodes)) throw new Error("Unbekanntes Node-Archiv");
+    state.contacts = new Map([...state.contacts, ...parsed.nodes.filter((contact) => contact?.key).map((contact) => [contact.key, contact])]);
+    saveContactArchive();
+    renderContacts();
+    renderNetworkOverview();
+    showActionNotice(`${parsed.nodes.length} Nodes importiert.`);
+  } catch (error) {
+    showActionNotice(`Node-Import fehlgeschlagen: ${error.message}`, "error");
   }
 }
 
