@@ -720,9 +720,15 @@ el.messages.addEventListener("click", (event) => {
 async function connectUsb() {
   try {
     state.intentionalDisconnect = false;
+    showActionNotice("USB-Gerät auswählen...");
     const port = await navigator.serial.requestPort();
     await openUsbPort(port);
   } catch (error) {
+    if (error.name === "NotFoundError") {
+      showActionNotice("Keine USB-Verbindung ausgewählt.", "warn");
+      return;
+    }
+    showActionNotice(`USB-Verbindung fehlgeschlagen: ${error.message}`, "error");
     log(`Verbindung fehlgeschlagen: ${error.message}`, "error");
     await disconnect();
   }
@@ -806,13 +812,16 @@ async function connectBluetooth() {
   }
   try {
     state.intentionalDisconnect = false;
+    showActionNotice("Bluetooth-Gerät auswählen...");
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [BLE_SERVICE_UUID] }],
       optionalServices: [BLE_SERVICE_UUID],
     });
     await openBluetoothDevice(device);
   } catch (error) {
-    if (error.name !== "NotFoundError") {
+    if (error.name === "NotFoundError") {
+      showActionNotice("Keine Bluetooth-Verbindung ausgewählt.", "warn");
+    } else {
       const message = /connection attempt failed/i.test(error.message)
         ? "Bluetooth-GATT-Verbindung fehlgeschlagen: Windows-Pairing ist vorhanden, aber das MeshCore-Geraet antwortet nicht. Andere MeshCore-Apps schliessen, Geraet aus- und wieder einschalten und erneut verbinden. Falls noetig, den Windows-Bluetooth-Eintrag entfernen und neu koppeln."
         : getBluetoothOpenErrorMessage(error);
