@@ -68,6 +68,7 @@ const WEATHER_COMMAND = "wetter";
 const WEATHER_REPLY_DELAY_MS = 1000;
 const WEATHER_COOLDOWN_MS = 30000;
 const WEATHER_FETCH_TIMEOUT_MS = 8000;
+const SYNC_RESPONSE_TIMEOUT_MS = 10000;
 const PING_ACK_TIMEOUT_DEFAULT_MS = 60000;
 const PING_ACK_TIMEOUT_MIN_MS = 30000;
 const PING_ACK_TIMEOUT_MAX_MS = 120000;
@@ -1025,7 +1026,7 @@ async function syncChannels() {
     }
     for (let index = 0; index < state.maxChannels; index += 1) {
       try {
-        await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
+        await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO], SYNC_RESPONSE_TIMEOUT_MS);
       } catch (error) {
         // leere Kanalslots melden einen Fehlercode, das darf den Sync anderer Kanaele nicht abbrechen
         if (!error.message.includes("Keine Antwort auf GET_CHANNEL")) state.channels.delete(index);
@@ -1172,6 +1173,7 @@ async function drainMessages(limit = 20) {
     const response = await sendAndWait(
       [CMD.SYNC_NEXT_MESSAGE],
       [RESP.CONTACT_MSG, RESP.CONTACT_MSG_V3, RESP.CHANNEL_MSG, RESP.CHANNEL_MSG_V3, RESP.CHANNEL_DATA, RESP.NO_MORE_MESSAGES],
+      SYNC_RESPONSE_TIMEOUT_MS,
     );
     if (response[0] === RESP.NO_MORE_MESSAGES) break;
   }
