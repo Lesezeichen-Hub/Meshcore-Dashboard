@@ -1984,9 +1984,12 @@ function formatRepeaterHash(hash) {
 
 function resolveRepeaterHash(hash) {
   const normalized = hash.toLowerCase();
-  return [...state.contacts.values()].filter(
-    (contact) => contact.type === 2 && contact.key?.toLowerCase().startsWith(normalized),
-  );
+  return [...state.contacts.values()]
+    .filter(
+      (contact) => (contact.type === 1 || contact.type === 2)
+        && contact.key?.toLowerCase().startsWith(normalized),
+    )
+    .sort((a, b) => (b.type === 2) - (a.type === 2));
 }
 
 function findChannelByName(name) {

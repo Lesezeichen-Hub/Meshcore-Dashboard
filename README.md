@@ -49,7 +49,7 @@ gemeinsam aktualisiert.
 - Dashboard-Konfiguration als JSON exportieren und importieren (ohne private Kanalschluessel)
 - Kontakte favorisieren sowie Nachrichten nach Text, Richtung und Typ filtern
 - Interaktive OpenStreetMap-Netzkarte mit Zoom, Clustering, Vollbild, Verbindungs- und Dichteebenen sowie Filtern nach Node-Typ
-- Umschaltbare Graphansicht, aufgeloeste Routenketten, Hop-Statistik je Node und Hervorhebung oft genutzter Repeater
+- Umschaltbare Graphansicht, ueber bekannte Repeater und Clients aufgeloeste Routenketten, Hop-Statistik je Node und Hervorhebung oft genutzter Repeater
 - Dauerhafte Reichweitenrekorde und erweiterte Paketdiagnose mit Rate, Volumen, ACK-Quote, Roundtrip, Duplikaten, Typverteilung und Ereignisliste
 - Informationsdienste `zeit <Ort>` und `sonne <Ort>` im Kanal `#wetter`
 - Als Progressive Web App installierbar und nach dem ersten Laden offline startbar
