@@ -9,6 +9,9 @@
   --accent: #57d7a0;
   --accent-2: #f3c969;
   --danger: #ff6b6b;
+  --field-bg: #171d1c;
+  --field-hover: #1e2724;
+  --focus-ring: rgba(87, 215, 160, 0.22);
 }
 
 * {
@@ -100,12 +103,49 @@ button,
 select,
 input,
 textarea {
-  min-height: 38px;
+  min-height: 42px;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-2);
+  border-radius: 8px;
+  background: var(--field-bg);
   color: var(--text);
   font: inherit;
+  line-height: 1.35;
+  transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #75817c;
+  opacity: 1;
+}
+
+input:hover:not(:disabled):not([readonly]),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled):not([readonly]) {
+  border-color: #4a5b55;
+  background-color: var(--field-hover);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+input:invalid:not(:placeholder-shown) {
+  border-color: var(--danger);
+}
+
+select {
+  padding-right: 34px;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 17px, calc(100% - 10px) 17px;
+  background-repeat: no-repeat;
+  background-size: 5px 5px, 5px 5px;
 }
 
 button {
@@ -154,7 +194,16 @@ select:disabled {
 input,
 select,
 textarea {
-  padding: 0 10px;
+  padding: 0 12px;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--accent);
 }
 
 textarea {
@@ -312,7 +361,7 @@ main {
 
 .status-band {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -331,6 +380,46 @@ main {
   margin-bottom: 4px;
   font-size: 12px;
   text-transform: uppercase;
+}
+
+.status-detail {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.repeater-status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  flex: 0 0 9px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(157, 170, 164, 0.12);
+}
+
+.repeater-status[data-state="active"] .status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(87, 215, 160, 0.16);
+}
+
+.repeater-status[data-state="inactive"] .status-dot {
+  background: var(--accent-2);
+  box-shadow: 0 0 0 3px rgba(243, 201, 105, 0.14);
+}
+
+.repeater-status[data-state="unsupported"] .status-dot,
+.repeater-status[data-state="misconfigured"] .status-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.14);
 }
 
 strong,
@@ -1487,8 +1576,8 @@ html[data-chat-density="compact"] .message-head button {
 
 .settings-dialog form {
   display: grid;
-  gap: 14px;
-  padding: 16px;
+  gap: 18px;
+  padding: 20px;
 }
 
 .settings-dialog > .dialog-head {
@@ -1524,6 +1613,29 @@ html[data-chat-density="compact"] .message-head button {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.form-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.form-field > input,
+.form-field > select,
+.form-field > textarea {
+  width: 100%;
+}
+
+.field-hint,
+.dialog-intro {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dialog-intro {
+  padding-bottom: 2px;
 }
 
 .dialog-actions {

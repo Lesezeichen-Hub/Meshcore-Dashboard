@@ -59,6 +59,11 @@
           <span class="label">Batterie</span>
           <strong id="batterySummary">-</strong>
         </div>
+        <div id="repeaterStatusCard" class="repeater-status" data-state="unknown" role="status" aria-live="polite">
+          <span class="label">Repeater</span>
+          <span class="repeater-status-line"><span class="status-dot" aria-hidden="true"></span><strong id="repeaterState">Nicht geprüft</strong></span>
+          <small id="repeaterDetails" class="status-detail">Nach dem Verbinden verfügbar</small>
+        </div>
       </section>
 
       <section class="grid">
@@ -296,8 +301,12 @@
           <h2 id="autoPongSettingsTitle">Antwortregeln</h2>
           <button id="closeAutoPongSettingsBtn" type="button" class="secondary dialog-close" aria-label="Einstellungen schließen" title="Schließen">&times;</button>
         </div>
-        <label class="field-label" for="autoPongPostalCodeInput">PLZ des mobilen Nodes</label>
-        <input id="autoPongPostalCodeInput" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="5" pattern="[0-9]{5}" placeholder="12345" required>
+        <p class="dialog-intro">Standort und Antwortregeln für automatische sowie manuelle Funkantworten.</p>
+        <label class="form-field" for="autoPongPostalCodeInput">
+          <span class="field-label">PLZ des mobilen Nodes</span>
+          <input id="autoPongPostalCodeInput" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="5" pattern="[0-9]{5}" placeholder="z. B. 12345" aria-describedby="autoPongPostalCodeHint" required>
+          <small id="autoPongPostalCodeHint" class="field-hint">Wird in Antworten als ungefährer Standort verwendet.</small>
+        </label>
         <div class="rule-section-head">
           <span class="field-label">Schnellantworten je Kanal</span>
           <span class="template-legend mono">{name} {hops} {plz} {snr} {rssi}</span>
@@ -334,8 +343,11 @@
           <button id="closeRoomLoginBtn" type="button" class="secondary dialog-close" aria-label="Dialog schliessen" title="Schliessen">&times;</button>
         </div>
         <p id="roomLoginTarget" class="room-login-target"></p>
-        <label class="field-label" for="roomPasswordInput">Passwort</label>
-        <input id="roomPasswordInput" type="password" autocomplete="current-password" maxlength="15" placeholder="Leer lassen, falls keines gesetzt">
+        <label class="form-field" for="roomPasswordInput">
+          <span class="field-label">Passwort</span>
+          <input id="roomPasswordInput" type="password" autocomplete="current-password" maxlength="15" placeholder="Optionales Room-Passwort">
+          <small class="field-hint">Leer lassen, wenn der Room kein Passwort verwendet.</small>
+        </label>
         <label class="switch-control"><input id="rememberRoomPassword" type="checkbox"><span class="switch-track" aria-hidden="true"></span><span>Login lokal merken</span></label>
         <div class="dialog-actions">
           <button id="roomLoginSubmitBtn" type="submit">Beitreten</button>

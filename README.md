@@ -39,6 +39,7 @@ gemeinsam aktualisiert.
 
 - Device-Info, Firmware/Modell und eigene Node-Daten lesen
 - Batterie/Speicher anzeigen
+- Repeater-Status, Aktivierung und die von der Firmware erlaubten Repeater-Frequenzen anzeigen
 - Kontakte synchronisieren, inklusive Repeater/Clients aus den Advertisements
 - Kanaele 0..N auslesen
 - eingehende Kanal- und Direktnachrichten anzeigen
@@ -60,5 +61,6 @@ gemeinsam aktualisiert.
 - Room-Favoriten automatisch wieder anmelden, Logins optional lokal merken und Room-Kontakte aus modernen QR-Links oder klassischen Business Cards importieren
 - Dauerhaften Room-Login-Status mit Erfolg, Fehler oder Timeout sowie Admin-Kennzeichnung anzeigen
 - Automatische USB-/Bluetooth-Wiederverbindung, persistente Sendewarteschlange, Verbindungs-Watchdog und verstaendliche Firmware-Fehlertexte
+- Ergonomische, tastaturfreundliche Formularfelder mit klaren Fokus-, Hover- und Validierungszustaenden
 
 Hinweis: Web Serial und Web Bluetooth sind in Firefox/Safari nicht verfuegbar. Nutze fuer USB die `companion_radio_usb`- und fuer Bluetooth die Companion-BLE-Firmware, jeweils nicht im KISS-Modus.

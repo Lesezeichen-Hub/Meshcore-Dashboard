@@ -15,6 +15,7 @@ const CMD = {
   SYNC_NEXT_MESSAGE: 0x0a,
   GET_BATT_AND_STORAGE: 0x14,
   DEVICE_QUERY: 0x16,
+  GET_ALLOWED_REPEAT_FREQ: 0x3c,
   GET_CHANNEL: 0x1f,
   SET_CHANNEL: 0x20,
   ADD_UPDATE_CONTACT: 0x09,
@@ -40,6 +41,7 @@ const RESP = {
   CHANNEL_MSG_V3: 0x11,
   CHANNEL_INFO: 0x12,
   CHANNEL_DATA: 0x1b,
+  ALLOWED_REPEAT_FREQ: 0x1a,
   ADVERTISEMENT: 0x80,
   PATH_UPDATED: 0x81,
   ACK: 0x82,
@@ -171,6 +173,10 @@ const state = {
   sendQueue: loadSendQueue(),
   flushingQueue: false,
   protocolVersion: null,
+  repeatEnabled: null,
+  repeatSupported: null,
+  allowedRepeatRanges: [],
+  currentRadio: null,
 };
 
 state.legacyMessages = state.messages.slice();
@@ -187,6 +193,9 @@ const el = {
   nodeName: document.querySelector("#nodeName"),
   radioSummary: document.querySelector("#radioSummary"),
   batterySummary: document.querySelector("#batterySummary"),
+  repeaterStatusCard: document.querySelector("#repeaterStatusCard"),
+  repeaterState: document.querySelector("#repeaterState"),
+  repeaterDetails: document.querySelector("#repeaterDetails"),
   deviceVersion: document.querySelector("#deviceVersion"),
   deviceModel: document.querySelector("#deviceModel"),
   firmwareBuild: document.querySelector("#firmwareBuild"),
@@ -994,10 +1003,16 @@ async function readLoop() {
 
 async function fullSync() {
   if (!state.connected) return;
+  state.repeatEnabled = null;
+  state.repeatSupported = null;
+  state.allowedRepeatRanges = [];
+  state.currentRadio = null;
+  updateRepeaterStatus();
   log("Synchronisiere Device, Kontakte, Kanaele und Nachrichten.");
   try {
     await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
     await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
+    await syncRepeaterStatus();
     try {
       await sendAndWait(buildDeviceTime(), [RESP.OK]);
     } catch (error) {
@@ -1017,6 +1032,20 @@ async function fullSync() {
   } catch (error) {
     log(`${error.message} Prüfe, ob das ausgewählte Gerät eine MeshCore Companion-Firmware nutzt.`, "error");
   }
+}
+
+async function syncRepeaterStatus() {
+  state.repeatSupported = null;
+  state.allowedRepeatRanges = [];
+  updateRepeaterStatus();
+  try {
+    await sendAndWait([CMD.GET_ALLOWED_REPEAT_FREQ], [RESP.ALLOWED_REPEAT_FREQ], SYNC_RESPONSE_TIMEOUT_MS);
+    state.repeatSupported = true;
+  } catch (error) {
+    state.repeatSupported = false;
+    log(`Repeater-Status ist mit dieser Firmware nicht vollständig verfügbar: ${error.message}`, "warn");
+  }
+  updateRepeaterStatus();
 }
 
 async function syncChannels() {
@@ -1417,6 +1446,9 @@ function handlePacket(data) {
       break;
     case RESP.BATTERY:
       parseBattery(data);
+      break;
+    case RESP.ALLOWED_REPEAT_FREQ:
+      parseAllowedRepeatFreq(data);
       break;
     case RESP.CONTACTS_START:
       log(`Kontaktliste startet: ${readU32(data, 1) ?? 0} Eintraege.`);
@@ -1992,8 +2024,10 @@ function parseSelfInfo(data) {
   el.publicKey.textContent = pub || "-";
   el.selfLocation.innerHTML = renderLocationLink(lat, lon);
   el.radioSummary.textContent = freq
-    ? `${(freq / 1000000).toFixed(3)} MHz, BW ${(bw / 1000).toFixed(0)} kHz, SF${sf}, CR${cr}`
+    ? `${(freq / 1000).toFixed(3)} MHz, BW ${(bw / 1000).toFixed(1)} kHz, SF${sf}, CR${cr}`
     : "-";
+  state.currentRadio = freq ? { freq, bw, sf, cr } : null;
+  updateRepeaterStatus();
   renderNetworkOverview();
 }
 
@@ -2008,6 +2042,70 @@ function parseDeviceInfo(data) {
     const semver = decodeCString(data, 60, 20);
     if (semver) el.deviceVersion.textContent = semver;
   }
+  state.repeatEnabled = data.length > 80 ? data[80] !== 0 : null;
+  updateRepeaterStatus();
+}
+
+function parseAllowedRepeatFreq(data) {
+  const ranges = [];
+  for (let offset = 1; offset + 7 < data.length; offset += 8) {
+    const lower = readU32(data, offset);
+    const upper = readU32(data, offset + 4);
+    if (lower != null && upper != null) ranges.push({ lower, upper });
+  }
+  state.allowedRepeatRanges = ranges;
+  state.repeatSupported = true;
+  updateRepeaterStatus();
+}
+
+function formatRepeatFrequency(khz) {
+  return `${(khz / 1000).toLocaleString("de-DE", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} MHz`;
+}
+
+function formatRepeatRanges(ranges) {
+  return ranges.map(({ lower, upper }) => lower === upper
+    ? formatRepeatFrequency(lower)
+    : `${formatRepeatFrequency(lower)}–${formatRepeatFrequency(upper)}`
+  ).join(", ");
+}
+
+function updateRepeaterStatus() {
+  if (!el.repeaterStatusCard) return;
+  let status = "unknown";
+  let label = "Nicht geprüft";
+  let details = "Nach dem Verbinden verfügbar";
+
+  if (!state.connected) {
+    label = "Nicht verbunden";
+  } else if (state.repeatEnabled === true) {
+    const currentFrequency = state.currentRadio?.freq;
+    const currentAllowed = currentFrequency == null || !state.allowedRepeatRanges.length
+      || state.allowedRepeatRanges.some(({ lower, upper }) => currentFrequency >= lower && currentFrequency <= upper);
+    status = currentAllowed ? "active" : "misconfigured";
+    label = currentAllowed ? "Aktiv" : "Aktiv, Profil prüfen";
+    details = !currentAllowed
+      ? `Aktuell ${formatRepeatFrequency(currentFrequency)}, erlaubt ${formatRepeatRanges(state.allowedRepeatRanges)}`
+      : state.allowedRepeatRanges.length
+        ? `Erlaubt: ${formatRepeatRanges(state.allowedRepeatRanges)}`
+        : "Weiterleitung ist eingeschaltet";
+  } else if (state.repeatEnabled === false) {
+    status = "inactive";
+    label = "Aus";
+    details = state.allowedRepeatRanges.length
+      ? `Bereit für ${formatRepeatRanges(state.allowedRepeatRanges)}`
+      : "In der MeshCore-App zuschalten";
+  } else if (state.repeatSupported === false) {
+    status = "unsupported";
+    label = "Nicht verfügbar";
+    details = "Firmware meldet keinen Repeater-Status";
+  } else {
+    label = "Wird gelesen …";
+    details = state.currentRadio ? "Funkprofil erkannt" : "Statusabfrage läuft";
+  }
+
+  el.repeaterStatusCard.dataset.state = status;
+  el.repeaterState.textContent = label;
+  el.repeaterDetails.textContent = details;
 }
 
 function parseBattery(data) {
@@ -3485,6 +3583,7 @@ function updateConnectionUi() {
   updateMessageInputPlaceholder();
   renderChannels();
   renderMessages();
+  updateRepeaterStatus();
 }
 
 let actionNoticeTimer = null;
