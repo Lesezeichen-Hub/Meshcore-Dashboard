@@ -71,6 +71,7 @@ const WEATHER_REPLY_DELAY_MS = 1000;
 const WEATHER_COOLDOWN_MS = 30000;
 const WEATHER_FETCH_TIMEOUT_MS = 8000;
 const SYNC_RESPONSE_TIMEOUT_MS = 10000;
+const BLUETOOTH_SYNC_EMERGENCY_IDLE_TIMEOUT_MS = 300000;
 const PING_ACK_TIMEOUT_DEFAULT_MS = 60000;
 const PING_ACK_TIMEOUT_MIN_MS = 30000;
 const PING_ACK_TIMEOUT_MAX_MS = 120000;
@@ -1010,19 +1011,19 @@ async function fullSync() {
   updateRepeaterStatus();
   log("Synchronisiere Device, Kontakte, Kanaele und Nachrichten.");
   try {
-    await sendAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
-    await sendAndWait(buildAppStart(), [RESP.SELF_INFO]);
+    await sendSyncAndWait([CMD.DEVICE_QUERY, 0x03], [RESP.DEVICE_INFO]);
+    await sendSyncAndWait(buildAppStart(), [RESP.SELF_INFO]);
     await syncRepeaterStatus();
     try {
-      await sendAndWait(buildDeviceTime(), [RESP.OK]);
+      await sendSyncAndWait(buildDeviceTime(), [RESP.OK]);
     } catch (error) {
       // Geraeteuhr laeuft bereits vor unserer PC-Zeit - darf den restlichen Sync nicht blockieren
       log(`Geraetezeit konnte nicht gesetzt werden: ${error.message}`, "warn");
     }
-    await sendAndWait([CMD.GET_BATT_AND_STORAGE], [RESP.BATTERY]);
+    await sendSyncAndWait([CMD.GET_BATT_AND_STORAGE], [RESP.BATTERY]);
     await syncChannels();
     try {
-      await sendAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END], 5000);
+      await sendSyncAndWait([CMD.GET_CONTACTS], [RESP.CONTACTS_END]);
     } catch (error) {
       log(`Kontaktliste konnte nicht vollständig synchronisiert werden: ${error.message}`, "warn");
     }
@@ -1039,7 +1040,7 @@ async function syncRepeaterStatus() {
   state.allowedRepeatRanges = [];
   updateRepeaterStatus();
   try {
-    await sendAndWait([CMD.GET_ALLOWED_REPEAT_FREQ], [RESP.ALLOWED_REPEAT_FREQ], SYNC_RESPONSE_TIMEOUT_MS);
+    await sendSyncAndWait([CMD.GET_ALLOWED_REPEAT_FREQ], [RESP.ALLOWED_REPEAT_FREQ]);
     state.repeatSupported = true;
   } catch (error) {
     state.repeatSupported = false;
@@ -1055,7 +1056,7 @@ async function syncChannels() {
     }
     for (let index = 0; index < state.maxChannels; index += 1) {
       try {
-        await sendAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO], SYNC_RESPONSE_TIMEOUT_MS);
+        await sendSyncAndWait([CMD.GET_CHANNEL, index], [RESP.CHANNEL_INFO]);
       } catch (error) {
         // leere Kanalslots melden einen Fehlercode, das darf den Sync anderer Kanaele nicht abbrechen
         if (!error.message.includes("Keine Antwort auf GET_CHANNEL")) state.channels.delete(index);
@@ -1197,27 +1198,48 @@ async function createChannel(event) {
   }
 }
 
-async function drainMessages(limit = 20) {
-  for (let i = 0; i < limit; i += 1) {
-    const response = await sendAndWait(
+async function drainMessages() {
+  while (true) {
+    const response = await sendSyncAndWait(
       [CMD.SYNC_NEXT_MESSAGE],
       [RESP.CONTACT_MSG, RESP.CONTACT_MSG_V3, RESP.CHANNEL_MSG, RESP.CHANNEL_MSG_V3, RESP.CHANNEL_DATA, RESP.NO_MORE_MESSAGES],
-      SYNC_RESPONSE_TIMEOUT_MS,
     );
-    if (response[0] === RESP.NO_MORE_MESSAGES) break;
+    if (response[0] === RESP.NO_MORE_MESSAGES) return;
   }
 }
 
-async function sendAndWait(payload, responseCodes, timeoutMs = 2500) {
+function sendSyncAndWait(payload, responseCodes) {
+  const bluetoothSync = state.transport === "bluetooth";
+  return sendAndWait(
+    payload,
+    responseCodes,
+    bluetoothSync ? BLUETOOTH_SYNC_EMERGENCY_IDLE_TIMEOUT_MS : SYNC_RESPONSE_TIMEOUT_MS,
+    bluetoothSync,
+  );
+}
+
+async function sendAndWait(payload, responseCodes, timeoutMs = 2500, refreshTimeoutOnActivity = false) {
+  let waiter;
   const response = new Promise((resolve, reject) => {
-    const waiter = { responseCodes, resolve, reject, timer: null };
-    waiter.timer = setTimeout(() => {
-      state.waiters = state.waiters.filter((item) => item !== waiter);
-      reject(new Error(`Keine Antwort auf ${commandName(payload[0])} innerhalb von ${timeoutMs} ms.`));
-    }, timeoutMs);
+    waiter = { responseCodes, resolve, reject, timer: null, refreshTimeout: null };
+    waiter.refreshTimeout = () => {
+      clearTimeout(waiter.timer);
+      waiter.timer = setTimeout(() => {
+        state.waiters = state.waiters.filter((item) => item !== waiter);
+        reject(new Error(`Keine Antwort auf ${commandName(payload[0])} innerhalb von ${timeoutMs} ms.`));
+      }, timeoutMs);
+    };
+    waiter.refreshTimeout();
+    if (!refreshTimeoutOnActivity) waiter.refreshTimeout = null;
     state.waiters.push(waiter);
   });
-  await sendCommand(payload);
+  try {
+    await sendCommand(payload);
+  } catch (error) {
+    state.waiters = state.waiters.filter((item) => item !== waiter);
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
   return response;
 }
 
@@ -1426,6 +1448,8 @@ function handlePacket(data) {
   recordPacket(code, data);
   log(`RX ${packetName(code)} ${toHex(data)}`);
 
+  for (const waiter of state.waiters) waiter.refreshTimeout?.();
+
   const waiterIndex = state.waiters.findIndex((waiter) => waiter.responseCodes.includes(code) || code === RESP.ERROR);
   if (waiterIndex >= 0) {
     const [waiter] = state.waiters.splice(waiterIndex, 1);
@@ -1476,7 +1500,7 @@ function handlePacket(data) {
       parseChannelData(data);
       break;
     case RESP.MESSAGES_WAITING:
-      drainMessages(8);
+      drainMessages().catch((error) => log(`Nachrichten konnten nicht vollständig synchronisiert werden: ${error.message}`, "warn"));
       break;
     case RESP.ADVERTISEMENT:
     case RESP.PATH_UPDATED:
