@@ -79,6 +79,8 @@ const PING_ACK_TIMEOUT_BUFFER_MS = 10000;
 const AUTO_PONG_COOLDOWN_MS = 15000;
 const RECONNECT_MAX_ATTEMPTS = 8;
 const BLE_OPEN_ATTEMPTS = 4;
+const ROOM_STATUS_DURATION_MS = 6000;
+const ROOM_ERROR_STATUS_DURATION_MS = 8000;
 const STORAGE_SCHEMA_VERSION = 2;
 const CONTACT_ARCHIVE_STORAGE_KEY = "meshcore-dashboard-node-archive";
 const DEVICE_PROFILE_DB_NAME = "meshcore-dashboard-profiles";
@@ -143,6 +145,9 @@ const state = {
   pendingRoomLogin: null,
   roomLoginTimer: null,
   roomStatus: null,
+  roomStatusTimer: null,
+  roomAutoLogin: loadBooleanSetting("meshcore-dashboard-room-auto-login", false),
+  roomAutoLoginRunning: false,
   dmTarget: null,
   unreadChannels: new Map(),
   ackResults: new Map(),
@@ -191,6 +196,7 @@ const el = {
   disconnectBtn: document.querySelector("#disconnectBtn"),
   connectionState: document.querySelector("#connectionState"),
   autoReconnectToggle: document.querySelector("#autoReconnectToggle"),
+  roomAutoLoginToggle: document.querySelector("#roomAutoLoginToggle"),
   nodeName: document.querySelector("#nodeName"),
   radioSummary: document.querySelector("#radioSummary"),
   batterySummary: document.querySelector("#batterySummary"),
@@ -293,6 +299,7 @@ applyTheme(loadTheme());
 el.autoPongToggle.checked = state.autoPongEnabled;
 el.weatherToggle.checked = state.weatherEnabled;
 el.autoReconnectToggle.checked = state.autoReconnect;
+el.roomAutoLoginToggle.checked = state.roomAutoLogin;
 applyChatDensity(loadChatDensity());
 initializeCollapsiblePanels();
 restoreContactArchive();
@@ -324,6 +331,18 @@ el.autoReconnectToggle.addEventListener("change", () => {
   localStorage.setItem("meshcore-dashboard-auto-reconnect", String(state.autoReconnect));
   if (!state.autoReconnect) clearTimeout(state.reconnectTimer);
   showActionNotice(`Auto-Reconnect ${state.autoReconnect ? "aktiviert" : "deaktiviert"}.`);
+});
+el.roomAutoLoginToggle.addEventListener("change", () => {
+  state.roomAutoLogin = el.roomAutoLoginToggle.checked;
+  try {
+    localStorage.setItem("meshcore-dashboard-room-auto-login", String(state.roomAutoLogin));
+  } catch {
+    // The setting still applies for this session.
+  }
+  showActionNotice(`Room-Auto-Login ${state.roomAutoLogin ? "aktiviert" : "deaktiviert"}.`);
+  if (state.roomAutoLogin && state.connected) {
+    reconnectFavoriteRooms().catch((error) => log(`Room-Wiederanmeldung fehlgeschlagen: ${error.message}`, "error"));
+  }
 });
 el.importContactCardBtn.addEventListener("click", importContactCard);
 el.themeToggle.addEventListener("click", () => {
@@ -1745,9 +1764,18 @@ function parseRoomLoginResult(data, success) {
 
 function setRoomStatus(status, text) {
   state.roomStatus = { status, text };
+  clearTimeout(state.roomStatusTimer);
   el.roomSessionStatus.hidden = false;
   el.roomSessionStatus.dataset.state = status;
   el.roomSessionStatus.textContent = text;
+  const duration = status === "error" ? ROOM_ERROR_STATUS_DURATION_MS : ROOM_STATUS_DURATION_MS;
+  state.roomStatusTimer = setTimeout(() => {
+    state.roomStatus = null;
+    state.roomStatusTimer = null;
+    el.roomSessionStatus.hidden = true;
+    el.roomSessionStatus.textContent = "";
+    delete el.roomSessionStatus.dataset.state;
+  }, duration);
 }
 
 async function leaveRoomServer(key) {
@@ -1795,31 +1823,37 @@ function persistRoomCredentials() {
 }
 
 async function reconnectFavoriteRooms() {
-  for (const key of state.roomFavorites) {
-    if (!state.connected) return;
-    const contact = state.contacts.get(key);
-    if (!contact || contact.type !== 3 || state.roomSessions.has(contact.prefix)) continue;
-    const passwordText = state.roomCredentials[key] || "";
-    const password = encodeText(passwordText);
-    if (password.length > 15) continue;
-    const pending = { contact, awaitingResult: true, automatic: true };
-    state.pendingRoomLogin = pending;
-    setRoomStatus("pending", `Wiederanmeldung bei ${contact.name} laeuft...`);
-    const payload = new Uint8Array(33 + password.length);
-    payload[0] = CMD.SEND_LOGIN;
-    payload.set(hexToBytes(contact.key), 1);
-    payload.set(password, 33);
-    try {
-      const response = await sendAndWait(payload, [RESP.SENT], 8000);
-      const waitMs = Math.min(120000, Math.max(10000, (readU32(response, 6) || 30000) + 5000));
-      clearTimeout(state.roomLoginTimer);
-      state.roomLoginTimer = setTimeout(() => parseRoomLoginResult(new Uint8Array(), false), waitMs);
-      const deadline = Date.now() + waitMs + 1000;
-      while (state.pendingRoomLogin === pending && Date.now() < deadline) await pause(250);
-    } catch (error) {
-      if (state.pendingRoomLogin === pending) state.pendingRoomLogin = null;
-      setRoomStatus("error", `Wiederanmeldung bei ${contact.name} fehlgeschlagen: ${error.message}`);
+  if (!state.roomAutoLogin || state.roomAutoLoginRunning) return;
+  state.roomAutoLoginRunning = true;
+  try {
+    for (const key of state.roomFavorites) {
+      if (!state.connected || !state.roomAutoLogin) return;
+      const contact = state.contacts.get(key);
+      if (!contact || contact.type !== 3 || state.roomSessions.has(contact.prefix)) continue;
+      const passwordText = state.roomCredentials[key] || "";
+      const password = encodeText(passwordText);
+      if (password.length > 15) continue;
+      const pending = { contact, awaitingResult: true, automatic: true };
+      state.pendingRoomLogin = pending;
+      setRoomStatus("pending", `Wiederanmeldung bei ${contact.name} laeuft...`);
+      const payload = new Uint8Array(33 + password.length);
+      payload[0] = CMD.SEND_LOGIN;
+      payload.set(hexToBytes(contact.key), 1);
+      payload.set(password, 33);
+      try {
+        const response = await sendAndWait(payload, [RESP.SENT], 8000);
+        const waitMs = Math.min(120000, Math.max(10000, (readU32(response, 6) || 30000) + 5000));
+        clearTimeout(state.roomLoginTimer);
+        state.roomLoginTimer = setTimeout(() => parseRoomLoginResult(new Uint8Array(), false), waitMs);
+        const deadline = Date.now() + waitMs + 1000;
+        while (state.pendingRoomLogin === pending && Date.now() < deadline) await pause(250);
+      } catch (error) {
+        if (state.pendingRoomLogin === pending) state.pendingRoomLogin = null;
+        setRoomStatus("error", `Wiederanmeldung bei ${contact.name} fehlgeschlagen: ${error.message}`);
+      }
     }
+  } finally {
+    state.roomAutoLoginRunning = false;
   }
 }
 
@@ -4394,6 +4428,7 @@ function exportConfiguration() {
       quickReplyRules: state.quickReplyRules,
       favoriteContacts: [...state.favoriteContacts],
       roomFavorites: [...state.roomFavorites],
+      roomAutoLogin: state.roomAutoLogin,
       autoReconnect: state.autoReconnect,
     },
   };
@@ -4422,6 +4457,7 @@ async function importConfiguration(event) {
     if (Array.isArray(settings.quickReplyRules)) localStorage.setItem("meshcore-dashboard-quick-reply-rules", JSON.stringify(settings.quickReplyRules));
     if (Array.isArray(settings.favoriteContacts)) localStorage.setItem("meshcore-dashboard-favorite-contacts", JSON.stringify(settings.favoriteContacts));
     if (Array.isArray(settings.roomFavorites)) localStorage.setItem("meshcore-dashboard-room-favorites", JSON.stringify(settings.roomFavorites));
+    if (typeof settings.roomAutoLogin === "boolean") localStorage.setItem("meshcore-dashboard-room-auto-login", String(settings.roomAutoLogin));
     if (typeof settings.autoReconnect === "boolean") localStorage.setItem("meshcore-dashboard-auto-reconnect", String(settings.autoReconnect));
     showActionNotice("Konfiguration importiert. Seite wird neu geladen.");
     setTimeout(() => location.reload(), 700);

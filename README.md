@@ -58,8 +58,8 @@ gemeinsam aktualisiert.
 - Kanaele aus nicht reservierten Slots wieder vom Companion entfernen
 - Kanal-Invites als offiziellen MeshCore-QR/Link teilen und importieren, Secrets maskieren sowie Kanaele verschieben, umbenennen, sichern und wiederherstellen
 - Mehreren Room-Servern gleichzeitig mit optionalem Passwort beitreten, eigene Tabs und ungelesene Nachrichten je Room nutzen und Rooms wieder verlassen
-- Room-Favoriten automatisch wieder anmelden, Logins optional lokal merken und Room-Kontakte aus modernen QR-Links oder klassischen Business Cards importieren
-- Dauerhaften Room-Login-Status mit Erfolg, Fehler oder Timeout sowie Admin-Kennzeichnung anzeigen
+- Room-Favoriten bei aktiviertem Room-Auto-Login automatisch wieder anmelden, Logins optional lokal merken und Room-Kontakte aus modernen QR-Links oder klassischen Business Cards importieren
+- Zeitlich begrenzten Room-Login-Status mit Erfolg, Fehler oder Timeout sowie Admin-Kennzeichnung anzeigen
 - Automatische USB-/Bluetooth-Wiederverbindung, persistente Sendewarteschlange, Verbindungs-Watchdog und verstaendliche Firmware-Fehlertexte
 - Ergonomische, tastaturfreundliche Formularfelder mit klaren Fokus-, Hover- und Validierungszustaenden
 
